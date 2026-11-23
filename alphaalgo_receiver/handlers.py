@@ -17,6 +17,8 @@ import logging
 import math
 import os
 from pathlib import Path
+import queue
+import re
 import threading
 from typing import Any, Callable, Iterable, Mapping
 import urllib.parse
@@ -27,6 +29,11 @@ logger = logging.getLogger("alphaalgo_receiver.handlers")
 EventHandler = Callable[[dict[str, Any]], None]
 
 _DISCORD_HOSTS = frozenset(("discord.com", "discordapp.com"))
+_TELEGRAM_API_BASE = "https://api.telegram.org"
+_TELEGRAM_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_\-]{20,}\Z")
+_TELEGRAM_CHAT_ID_RE = re.compile(r"(?:-?\d+|@[A-Za-z0-9_]{5,})\Z")
+_USER_AGENT = "alphaalgo-feed-receiver/1.0"
+_STOP_SENTINEL = object()
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -144,16 +151,53 @@ def _validate_discord_url(webhook_url: str) -> None:
         raise ValueError("invalid_discord_webhook_url")
 
 
-def _build_discord_payload(event: Mapping[str, Any]) -> bytes:
-    """Build a mention-safe Discord JSON payload from a verified event."""
-    clean = (
+def _sanitize_summary(event: Mapping[str, Any]) -> str:
+    """Return a single-line, backtick-safe summary for chat sinks."""
+    return (
         format_event_summary(event)
         .replace("`", "'")
         .replace("\r", " ")
         .replace("\n", " ")
     )
+
+
+def _post_json(
+    url: str,
+    payload: bytes,
+    *,
+    timeout: float,
+    sink_name: str,
+    event_id: Any,
+    redact_error_url: bool = False,
+) -> None:
+    """POST JSON to an outbound read-only sink without propagating errors."""
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
+    req = urllib.request.Request(
+        url, data=payload, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+    except Exception as exc:
+        if redact_error_url:
+            detail = f"{type(exc).__name__}(code={getattr(exc, 'code', None)})"
+        else:
+            detail = str(exc)
+        logger.warning(
+            "%s forward failed for %s: %s",
+            sink_name,
+            event_id,
+            detail,
+        )
+
+
+def _build_discord_payload(event: Mapping[str, Any]) -> bytes:
+    """Build a mention-safe Discord JSON payload from a verified event."""
     body = {
-        "content": f"`{clean}`",
+        "content": f"`{_sanitize_summary(event)}`",
         "allowed_mentions": {"parse": []},
     }
     return json.dumps(body).encode("utf-8")
@@ -168,23 +212,63 @@ def discord_webhook_handler(
     _validate_discord_url(webhook_url)
 
     def _notify(event: dict[str, Any]) -> None:
-        payload = _build_discord_payload(event)
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "alphaalgo-feed-receiver/1.0",
-        }
-        req = urllib.request.Request(
-            webhook_url, data=payload, headers=headers, method="POST"
+        _post_json(
+            webhook_url,
+            _build_discord_payload(event),
+            timeout=timeout,
+            sink_name="Discord",
+            event_id=event.get("event_id"),
+            redact_error_url=True,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout):
-                pass
-        except Exception as exc:
-            logger.warning(
-                "Discord forward failed for %s: %s",
-                event.get("event_id"),
-                exc,
-            )
+
+    return _notify
+
+
+def _validate_telegram_config(bot_token: str, chat_id: str | int) -> str:
+    """Validate Telegram Bot API token and chat_id, returning str chat_id."""
+    if not isinstance(bot_token, str) or not _TELEGRAM_TOKEN_RE.fullmatch(
+        bot_token.strip()
+    ):
+        raise ValueError("invalid_telegram_bot_token")
+    if isinstance(chat_id, bool):
+        raise ValueError("invalid_telegram_chat_id")
+    normalized_chat = str(chat_id).strip()
+    if not _TELEGRAM_CHAT_ID_RE.fullmatch(normalized_chat):
+        raise ValueError("invalid_telegram_chat_id")
+    return normalized_chat
+
+
+def _build_telegram_payload(
+    event: Mapping[str, Any], chat_id: str
+) -> bytes:
+    """Build a plain-text Telegram sendMessage payload (no link previews)."""
+    body = {
+        "chat_id": chat_id,
+        "text": _sanitize_summary(event),
+        "disable_web_page_preview": True,
+    }
+    return json.dumps(body).encode("utf-8")
+
+
+def telegram_bot_handler(
+    bot_token: str,
+    chat_id: str | int,
+    *,
+    timeout: float = 5.0,
+) -> EventHandler:
+    """Return a read-only Telegram Bot notifier using Python stdlib only."""
+    normalized_chat = _validate_telegram_config(bot_token, chat_id)
+    endpoint = f"{_TELEGRAM_API_BASE}/bot{bot_token.strip()}/sendMessage"
+
+    def _notify(event: dict[str, Any]) -> None:
+        _post_json(
+            endpoint,
+            _build_telegram_payload(event, normalized_chat),
+            timeout=timeout,
+            sink_name="Telegram",
+            event_id=event.get("event_id"),
+            redact_error_url=True,
+        )
 
     return _notify
 
@@ -206,3 +290,99 @@ def dispatch_handlers(handlers: Iterable[EventHandler]) -> EventHandler:
                 )
 
     return _dispatch
+
+
+class AsyncEventDispatcher:
+    """Non-blocking background worker queue for slow downstream handlers.
+
+    Keeps ``POST /events`` responses fast even if outbound webhooks (Discord,
+    Telegram, databases) experience latency spikes. Events are processed in
+    FIFO order on a single daemon thread; if the bounded queue fills up, new
+    events are dropped with a warning rather than blocking HTTP ``200 OK``.
+    """
+
+    def __init__(
+        self,
+        handler: EventHandler,
+        *,
+        max_queue_size: int = 1000,
+    ) -> None:
+        if (
+            not isinstance(max_queue_size, int)
+            or isinstance(max_queue_size, bool)
+            or max_queue_size <= 0
+        ):
+            raise ValueError("max_queue_size must be a positive integer")
+        self._handler = handler
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
+        self._closed = False
+        self._lock = threading.Lock()
+        self.dropped_count = 0
+        self._worker = threading.Thread(
+            target=self._run,
+            name="alphaalgo-async-dispatcher",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is _STOP_SENTINEL:
+                    return
+                try:
+                    self._handler(item)
+                except Exception as exc:
+                    logger.exception(
+                        "Async handler failed for %s: %s",
+                        item.get("event_id") if isinstance(item, dict) else "?",
+                        exc,
+                    )
+            finally:
+                self._queue.task_done()
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        """Enqueue a verified event without blocking the HTTP request thread."""
+        with self._lock:
+            if self._closed:
+                logger.warning(
+                    "Async dispatcher closed; dropping %s",
+                    event.get("event_id"),
+                )
+                self.dropped_count += 1
+                return
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                self.dropped_count += 1
+                logger.warning(
+                    "Async dispatcher queue full (%d); dropping %s",
+                    self._queue.maxsize,
+                    event.get("event_id"),
+                )
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Wait until all currently queued items finish processing."""
+        done = threading.Event()
+
+        def _wait() -> None:
+            self._queue.join()
+            done.set()
+
+        waiter = threading.Thread(target=_wait, daemon=True)
+        waiter.start()
+        return done.wait(timeout=timeout)
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Drain queued events and stop the background worker cleanly."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self._queue.put(_STOP_SENTINEL, timeout=timeout)
+        except queue.Full:
+            logger.warning("Async dispatcher queue full during shutdown")
+            return
+        self._worker.join(timeout=timeout)

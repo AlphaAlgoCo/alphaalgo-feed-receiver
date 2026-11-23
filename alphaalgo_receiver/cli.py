@@ -9,13 +9,25 @@ from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from .handlers import (
+    AsyncEventDispatcher,
     EventHandler,
     discord_webhook_handler,
     dispatch_handlers,
     jsonl_file_handler,
     on_verified_event,
+    telegram_bot_handler,
 )
 from .receiver import WebhookReceiver
+
+
+def _env_flag(name: str) -> bool:
+    """Parse a boolean environment variable (1/true/yes/on)."""
+    return os.environ.get(name, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 class _QuietHandler(WSGIRequestHandler):
@@ -65,11 +77,61 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional HTTPS Discord webhook URL for read-only alerts",
     )
     parser.add_argument(
+        "--telegram-bot-token",
+        default=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        help="Optional Telegram Bot API token for read-only alerts",
+    )
+    parser.add_argument(
+        "--telegram-chat-id",
+        default=os.environ.get("TELEGRAM_CHAT_ID", ""),
+        help="Telegram chat ID paired with --telegram-bot-token",
+    )
+    parser.add_argument(
+        "--async-handlers",
+        action="store_true",
+        default=_env_flag("ALPHAALGO_ASYNC_HANDLERS"),
+        help=(
+            "Run downstream handlers on a background worker thread so "
+            "POST /events returns 200 OK immediately"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose debug logging",
     )
     return parser
+
+
+def _build_event_pipeline(
+    args: argparse.Namespace,
+) -> tuple[EventHandler, AsyncEventDispatcher | None]:
+    """Assemble verified-event handlers and optional async background queue."""
+    if bool(args.telegram_bot_token) != bool(args.telegram_chat_id):
+        raise ValueError(
+            "Both --telegram-bot-token and --telegram-chat-id must be set "
+            "together"
+        )
+
+    # Always run `on_verified_event` (edit handlers.py to add custom logic),
+    # plus any optional CLI-configured read-only sinks.
+    handlers: list[EventHandler] = [on_verified_event]
+    if args.jsonl_log:
+        handlers.append(jsonl_file_handler(args.jsonl_log))
+    if args.discord_webhook:
+        handlers.append(discord_webhook_handler(args.discord_webhook))
+    if args.telegram_bot_token and args.telegram_chat_id:
+        handlers.append(
+            telegram_bot_handler(
+                args.telegram_bot_token, args.telegram_chat_id
+            )
+        )
+
+    pipeline = dispatch_handlers(handlers)
+    if args.async_handlers:
+        dispatcher = AsyncEventDispatcher(pipeline)
+        return dispatcher, dispatcher
+    return pipeline, None
 
 
 def main() -> None:
@@ -97,28 +159,26 @@ def main() -> None:
             'Set ALPHAALGO_RECEIVER_KEYS_JSON, e.g. \'{"v1": "whsec_..."}\''
         )
 
-    # Always run `on_verified_event` (edit handlers.py to add custom logic),
-    # plus any optional CLI-configured read-only sinks.
-    handlers: list[EventHandler] = [on_verified_event]
-    if args.jsonl_log:
-        handlers.append(jsonl_file_handler(args.jsonl_log))
-    if args.discord_webhook:
-        handlers.append(discord_webhook_handler(args.discord_webhook))
-
+    async_dispatcher: AsyncEventDispatcher | None = None
     try:
+        on_event, async_dispatcher = _build_event_pipeline(args)
         app = WebhookReceiver(
             args.database,
             keys,
-            on_event=dispatch_handlers(handlers),
+            on_event=on_event,
         )
     except ValueError as exc:
+        if async_dispatcher is not None:
+            async_dispatcher.close()
         parser.error(f"Invalid receiver configuration: {exc}")
 
     logging.getLogger("alphaalgo_receiver").info(
-        "Listening on http://%s:%d/events (healthz: /healthz, db: %s)",
+        "Listening on http://%s:%d/events (healthz: /healthz, db: %s, "
+        "async=%s)",
         args.host,
         args.port,
         args.database,
+        args.async_handlers,
     )
     with make_server(
         args.host,
@@ -132,6 +192,8 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
         finally:
+            if async_dispatcher is not None:
+                async_dispatcher.close()
             app.close()
 
 

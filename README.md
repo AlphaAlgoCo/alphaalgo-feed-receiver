@@ -9,7 +9,7 @@ Built with **zero third-party dependencies** (pure Python 3.10+ standard library
 - **Zero-downtime key rotation** (map multiple `key_id -> whsec_...` secrets simultaneously)
 - **Durable SQLite (WAL) idempotency** — deduplicates retries by `event_id` and rejects mismatched payload collisions with `409 Conflict`
 - **Unified Schema v3 parsing** across all 3 first-class `instrument.kind` types (`single_option`, `vertical_credit_spread`, `iron_butterfly`) with uniform `instrument.legs[]`
-- **Clear extension point (`alphaalgo_receiver/handlers.py`)** — edit `on_verified_event(event)` or attach built-in JSONL / Discord read-only sinks
+- **Clear extension point (`alphaalgo_receiver/handlers.py`)** — edit `on_verified_event(event)` or attach built-in JSONL / Discord / Telegram read-only sinks, optionally offloaded to a non-blocking `AsyncEventDispatcher` background queue
 
 > **Research & Telemetry Only — No Brokerage Execution:** This repository is strictly a read-only webhook receiver and logging starter kit. It never connects to any brokerage API and never places orders. Subscribers retain sole control over their own infrastructure, trading decisions, and risk.
 
@@ -97,13 +97,16 @@ def on_verified_event(event: dict[str, Any]) -> None:
 
 Note that top-level `event["option_symbol"]` is populated **only** for `single_option` and is `null` for multi-leg instruments (`vertical_credit_spread`, `iron_butterfly`), so iterating `event["instrument"]["legs"]` handles every strategy uniformly without naked single-leg ambiguity.
 
-You can also compose multiple handlers programmatically with `dispatch_handlers(...)`, or enable built-in sinks via CLI:
+You can also compose multiple handlers programmatically with `dispatch_handlers(...)`, wrap slow sinks in `AsyncEventDispatcher(...)`, or enable built-in sinks via CLI:
 
 ```bash
 python3 -m alphaalgo_receiver \
   --database ./receipts.db \
   --jsonl-log ./events.jsonl \
-  --discord-webhook "https://discord.com/api/webhooks/..."
+  --discord-webhook "https://discord.com/api/webhooks/..." \
+  --telegram-bot-token "123456789:AA..." \
+  --telegram-chat-id "-1001234567890" \
+  --async-handlers
 ```
 
 ---

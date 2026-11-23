@@ -9,9 +9,13 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import threading
 import unittest
+from unittest import mock
+import urllib.error
 
 from alphaalgo_receiver import (
+    AsyncEventDispatcher,
     FeedSecurityError,
     WebhookReceiver,
     discord_webhook_handler,
@@ -20,10 +24,15 @@ from alphaalgo_receiver import (
     generate_signing_secret,
     jsonl_file_handler,
     sign_event,
+    telegram_bot_handler,
     validate_signing_keys,
     verify_event,
 )
-from alphaalgo_receiver.handlers import _build_discord_payload
+from alphaalgo_receiver.cli import _build_event_pipeline, _build_parser
+from alphaalgo_receiver.handlers import (
+    _build_discord_payload,
+    _build_telegram_payload,
+)
 from scripts.send_mock_event import build_mock_event
 
 
@@ -526,6 +535,128 @@ class TestHandlers(unittest.TestCase):
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
         self.assertNotIn("\n", payload["content"])
         self.assertEqual(payload["content"].count("`"), 2)
+
+    def test_telegram_validation_payload_and_token_redaction(self) -> None:
+        valid_token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ12345"
+        bad_configs = [
+            ("", "12345"),
+            ("not-a-token", "12345"),
+            ("123:short", "12345"),
+            (valid_token, ""),
+            (valid_token, True),
+            (valid_token, "bad chat id"),
+            (valid_token, "@ab"),
+        ]
+        for token, chat_id in bad_configs:
+            with self.assertRaises(ValueError):
+                telegram_bot_handler(token, chat_id)  # type: ignore[arg-type]
+
+        for ok_chat in ("-1001234567890", 987654321, "@alphaalgo_alerts"):
+            self.assertTrue(
+                callable(telegram_bot_handler(valid_token, ok_chat))
+            )
+
+        payload = json.loads(
+            _build_telegram_payload(
+                {"trade_ref": "TR-9`\nline2", "strategy_id": "S623"},
+                "-1001234567890",
+            ).decode("utf-8")
+        )
+        self.assertEqual(payload["chat_id"], "-1001234567890")
+        self.assertTrue(payload["disable_web_page_preview"])
+        self.assertNotIn("\n", payload["text"])
+        self.assertNotIn("`", payload["text"])
+
+        # Outbound HTTP errors must never leak the bot token into logs.
+        handler = telegram_bot_handler(valid_token, "-1001234567890")
+        err = urllib.error.HTTPError(
+            f"https://api.telegram.org/bot{valid_token}/sendMessage",
+            401,
+            "Unauthorized",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=None,
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=err):
+            with self.assertLogs(
+                "alphaalgo_receiver.handlers", level="WARNING"
+            ) as logs:
+                handler({"event_id": "aa3-tg-1"})
+        joined = "\n".join(logs.output)
+        self.assertNotIn(valid_token, joined)
+        self.assertIn("HTTPError(code=401)", joined)
+
+    def test_async_dispatcher_fifo_isolation_and_backpressure(self) -> None:
+        with self.assertRaises(ValueError):
+            AsyncEventDispatcher(lambda _e: None, max_queue_size=0)
+        with self.assertRaises(ValueError):
+            AsyncEventDispatcher(lambda _e: None, max_queue_size=True)
+
+        gate = threading.Event()
+        started = threading.Event()
+        processed: list[str] = []
+
+        def slow_and_flaky(event: dict) -> None:
+            eid = event["event_id"]
+            if eid == "e1":
+                started.set()
+                gate.wait(timeout=2.0)
+            if eid == "e2":
+                raise RuntimeError("boom in background worker")
+            processed.append(eid)
+
+        dispatcher = AsyncEventDispatcher(slow_and_flaky, max_queue_size=2)
+        try:
+            dispatcher({"event_id": "e1"})
+            self.assertTrue(started.wait(timeout=2.0))
+            # While e1 is running in worker, queue can hold 2 more (e2, e3).
+            dispatcher({"event_id": "e2"})
+            dispatcher({"event_id": "e3"})
+            # 4th event overflows bounded queue and drops without blocking.
+            with self.assertLogs(
+                "alphaalgo_receiver.handlers", level="WARNING"
+            ):
+                dispatcher({"event_id": "e4-dropped"})
+            self.assertEqual(dispatcher.dropped_count, 1)
+
+            with self.assertLogs(
+                "alphaalgo_receiver.handlers", level="ERROR"
+            ):
+                gate.set()
+                self.assertTrue(dispatcher.flush(timeout=2.0))
+            self.assertEqual(processed, ["e1", "e3"])
+        finally:
+            dispatcher.close(timeout=2.0)
+
+        # Post-close enqueue drops safely without raising.
+        with self.assertLogs("alphaalgo_receiver.handlers", level="WARNING"):
+            dispatcher({"event_id": "e5-after-close"})
+        self.assertEqual(dispatcher.dropped_count, 2)
+
+    def test_cli_pipeline_wiring_and_telegram_pair_check(self) -> None:
+        parser = _build_parser()
+        # Half-configured Telegram flags must fail fast.
+        bad_args = parser.parse_args(
+            ["--telegram-bot-token", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ123"]
+        )
+        with self.assertRaises(ValueError):
+            _build_event_pipeline(bad_args)
+
+        good_args = parser.parse_args(
+            [
+                "--telegram-bot-token",
+                "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ123",
+                "--telegram-chat-id",
+                "-100123456",
+                "--async-handlers",
+            ]
+        )
+        pipeline, async_disp = _build_event_pipeline(good_args)
+        try:
+            self.assertIsNotNone(async_disp)
+            self.assertIs(pipeline, async_disp)
+        finally:
+            if async_disp is not None:
+                async_disp.close()
 
 
 if __name__ == "__main__":
