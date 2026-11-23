@@ -43,6 +43,21 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
 
+def serve_receiver(app: WebhookReceiver, host: str, port: int) -> None:
+    """Serve a WebhookReceiver over threaded HTTP until interrupted."""
+    with make_server(
+        host,
+        port,
+        app,
+        server_class=_ThreadingWSGIServer,
+        handler_class=_QuietHandler,
+    ) as server:
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -180,21 +195,12 @@ def main() -> None:
         args.database,
         args.async_handlers,
     )
-    with make_server(
-        args.host,
-        args.port,
-        app,
-        server_class=_ThreadingWSGIServer,
-        handler_class=_QuietHandler,
-    ) as server:
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            if async_dispatcher is not None:
-                async_dispatcher.close()
-            app.close()
+    try:
+        serve_receiver(app, args.host, args.port)
+    finally:
+        if async_dispatcher is not None:
+            async_dispatcher.close()
+        app.close()
 
 
 if __name__ == "__main__":

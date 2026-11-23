@@ -23,10 +23,13 @@ alphaalgo_receiver/
   receiver.py   <-- HTTP / WSGI server + SQLite WAL deduplication
   security.py   <-- Standard Webhooks v1 HMAC-SHA256 signing & verification
   cli.py        <-- CLI flags & wiring (`python3 -m alphaalgo_receiver`)
+examples/
+  paper_ledger.py     <-- Read-only position state tracker (live & offline replay)
 scripts/
-  send_mock_event.py  <-- Send locally signed mock v3 events (1-leg, 2-leg, 4-leg)
+  send_mock_event.py  <-- Send single v3 events or full lifecycle replay scenarios
 tests/
-  test_receiver.py    <-- Unit tests for security, HTTP bounds, SQLite, handlers
+  test_receiver.py      <-- Unit tests for security, HTTP bounds, SQLite, handlers
+  test_paper_ledger.py  <-- Unit tests for Paper Ledger & lifecycle replay
 ```
 
 ---
@@ -75,6 +78,28 @@ You should see:
 
 ```text
 HTTP 200: {"accepted": true, "duplicate": false, "execution": "disabled"}
+```
+
+### 4. Interactive Full Lifecycle Demo (Paper Ledger + Scenario Replay)
+
+Want to watch how a real trade flows through `entry -> entry_update -> partial_exit -> exit`, 2-leg spreads, 4-leg IBF settlement observations, exact retries (`duplicate: true`), `409 Conflict` collisions, out-of-order `trade_revision`, expired entries, incomplete instruments, and `401` tamper rejections?
+
+Terminal 1 — start the read-only Paper Ledger receiver:
+
+```bash
+python3 examples/paper_ledger.py --serve --port 9091
+```
+
+Terminal 2 — replay the full scenario suite:
+
+```bash
+python3 scripts/send_mock_event.py --scenario full_demo --delay 0.3
+```
+
+You can also rebuild the position table offline from any existing `receipts.db` or `events.jsonl` and export it to CSV:
+
+```bash
+python3 examples/paper_ledger.py --from-db ./receipts.db --export-csv ./ledger.csv
 ```
 
 ---

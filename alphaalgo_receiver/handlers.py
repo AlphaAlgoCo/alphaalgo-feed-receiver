@@ -74,7 +74,7 @@ def on_verified_event(event: dict[str, Any]) -> None:
     logger.info("Event received: %s", format_event_summary(event))
 
 
-def _describe_contract(event: Mapping[str, Any]) -> str:
+def describe_contract(event: Mapping[str, Any]) -> str:
     """Summarize the single OCC symbol or multi-leg instrument structure."""
     symbol = event.get("option_symbol")
     if isinstance(symbol, str) and symbol:
@@ -96,7 +96,7 @@ def format_event_summary(event: Mapping[str, Any]) -> str:
     strategy = str(event.get("strategy_id", "UNKNOWN"))
     trade_ref = str(event.get("trade_ref", "-"))
     ticker = str(event.get("ticker", "-"))
-    contract = _describe_contract(event)
+    contract = describe_contract(event)
 
     scale = event.get("position_scale_x")
     scale_str = f"{scale:.2f}x" if _is_finite_number(scale) else "-"

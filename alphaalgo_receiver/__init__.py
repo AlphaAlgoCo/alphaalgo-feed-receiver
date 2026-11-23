@@ -4,6 +4,7 @@ Research and execution telemetry starter kit. Never places brokerage orders.
 """
 from .handlers import (
     AsyncEventDispatcher,
+    describe_contract,
     dispatch_handlers,
     discord_webhook_handler,
     format_event_summary,
@@ -24,6 +25,7 @@ __all__ = [
     "AsyncEventDispatcher",
     "FeedSecurityError",
     "WebhookReceiver",
+    "describe_contract",
     "discord_webhook_handler",
     "dispatch_handlers",
     "format_event_summary",
