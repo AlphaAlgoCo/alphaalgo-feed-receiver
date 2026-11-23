@@ -28,7 +28,11 @@ from alphaalgo_receiver import (
     validate_signing_keys,
     verify_event,
 )
-from alphaalgo_receiver.cli import _build_event_pipeline, _build_parser
+from alphaalgo_receiver.cli import (
+    _build_event_pipeline,
+    _build_parser,
+    _default_port,
+)
 from alphaalgo_receiver.handlers import (
     _build_discord_payload,
     _build_telegram_payload,
@@ -657,6 +661,66 @@ class TestHandlers(unittest.TestCase):
         finally:
             if async_disp is not None:
                 async_disp.close()
+
+    def test_default_port_resolution_and_nested_db_dir(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_default_port(), 9091)
+        with mock.patch.dict(os.environ, {"PORT": "8080"}, clear=True):
+            self.assertEqual(_default_port(), 8080)
+        with mock.patch.dict(
+            os.environ,
+            {"PORT": "8080", "ALPHAALGO_PORT": "9100"},
+            clear=True,
+        ):
+            self.assertEqual(_default_port(), 9100)
+        with mock.patch.dict(os.environ, {"PORT": "not-a-port"}, clear=True):
+            with self.assertRaises(ValueError):
+                _default_port()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = Path(tmpdir) / "deep" / "dir" / "receipts.db"
+            rec = WebhookReceiver(
+                nested, {"v1": generate_signing_secret()}, on_event=None
+            )
+            try:
+                self.assertTrue(nested.exists())
+            finally:
+                rec.close()
+
+    def test_deployment_configs_consistent_and_valid(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        # Dockerfile must not override PaaS-injected PORT with ALPHAALGO_PORT.
+        self.assertNotIn("ALPHAALGO_PORT=", dockerfile)
+        self.assertIn("/healthz", dockerfile)
+        self.assertIn("/data/receipts.db", dockerfile)
+
+        railway = json.loads(
+            (root / "railway.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(railway["build"]["builder"], "DOCKERFILE")
+        self.assertEqual(railway["deploy"]["healthcheckPath"], "/healthz")
+
+        render = (root / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("healthCheckPath: /healthz", render)
+        self.assertIn("mountPath: /data", render)
+        self.assertIn("ALPHAALGO_RECEIVER_KEYS_JSON", render)
+
+        compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("127.0.0.1:9091:9091", compose)
+        self.assertIn(":/data", compose)
+
+        fly_text = (root / "fly.toml").read_text(encoding="utf-8")
+        self.assertIn('path = "/healthz"', fly_text)
+        self.assertIn('destination = "/data"', fly_text)
+        try:
+            import tomllib  # Python 3.11+
+
+            fly_cfg = tomllib.loads(fly_text)
+            self.assertEqual(fly_cfg["http_service"]["internal_port"], 9091)
+            self.assertTrue(fly_cfg["http_service"]["force_https"])
+        except ModuleNotFoundError:
+            pass
 
 
 if __name__ == "__main__":

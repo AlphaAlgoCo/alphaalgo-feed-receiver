@@ -1,0 +1,20 @@
+services:
+  alphaalgo-receiver:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ALPHAALGO_HOST: "0.0.0.0"
+      ALPHAALGO_PORT: "9091"
+      ALPHAALGO_DB_PATH: "/data/receipts.db"
+      ALPHAALGO_JSONL_LOG: "/data/events.jsonl"
+      ALPHAALGO_ASYNC_HANDLERS: "true"
+    ports:
+      # Bound to loopback by default; terminate public HTTPS via Caddy/nginx.
+      - "127.0.0.1:9091:9091"
+    volumes:
+      - receiver_data:/data
+
+volumes:
+  receiver_data:

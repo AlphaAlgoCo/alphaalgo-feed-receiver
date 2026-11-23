@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: alphaalgo-feed-receiver
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: alphaalgo-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ALPHAALGO_RECEIVER_KEYS_JSON
+        sync: false
+      - key: ALPHAALGO_HOST
+        value: "0.0.0.0"
+      - key: ALPHAALGO_DB_PATH
+        value: /data/receipts.db
+      - key: ALPHAALGO_JSONL_LOG
+        value: /data/events.jsonl
+      - key: ALPHAALGO_ASYNC_HANDLERS
+        value: "true"
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

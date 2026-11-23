@@ -30,6 +30,17 @@ def _env_flag(name: str) -> bool:
     )
 
 
+def _default_port() -> int:
+    """Resolve bind port: ALPHAALGO_PORT -> PaaS PORT -> 9091."""
+    raw = os.environ.get("ALPHAALGO_PORT") or os.environ.get("PORT") or "9091"
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid port environment value {raw!r}; expected integer 1..65535"
+        ) from exc
+
+
 class _QuietHandler(WSGIRequestHandler):
     """Suppress per-request access logs to avoid noisy stdout."""
 
@@ -78,8 +89,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("ALPHAALGO_PORT", "9091")),
-        help="Bind port (default: 9091)",
+        default=None,
+        help="Bind port (default: ALPHAALGO_PORT, then PORT, then 9091)",
     )
     parser.add_argument(
         "--jsonl-log",
@@ -152,6 +163,12 @@ def _build_event_pipeline(
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.port is None:
+        try:
+            args.port = _default_port()
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")

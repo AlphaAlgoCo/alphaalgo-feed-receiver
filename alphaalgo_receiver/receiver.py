@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import sqlite3
 import threading
 import time
@@ -62,6 +63,8 @@ class WebhookReceiver:
         self.max_age = max_age
         self.lock = threading.Lock()
 
+        if str(database) != ":memory:":
+            Path(database).parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(
             str(database), timeout=30.0, check_same_thread=False
         )

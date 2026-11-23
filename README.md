@@ -161,7 +161,7 @@ For the complete field-by-field contract (including `record_kind`, `instrument.c
 
 The AlphaAlgo Developer Feed delivers webhooks only to **public HTTPS URLs on port 443** with a valid CA-signed TLS certificate (no `http://`, no self-signed certs, no private/localhost IPs, and no embedded credentials, `?query`, or `#fragment`).
 
-Always keep the Python receiver bound to `127.0.0.1:9091` and place an HTTPS reverse proxy or tunnel in front of it. Choose either **Option A** (fastest for testing, no domain required) or **Option B** (recommended for always-on hosting).
+Always terminate TLS in front of the Python receiver. Choose **Option A** (1-minute local test), **Option B** (managed HTTPS hosting on Railway / Render / Fly.io or Docker Compose — no domain or Caddy setup required), or **Option C** (self-hosted Linux VPS with Caddy + systemd).
 
 ---
 
@@ -205,11 +205,40 @@ Best for trying out the live read-only feed on a laptop or test VPS without buyi
    # Expected: {"service": "alphaalgo-feed-receiver", "schema_version": 3, "execution": "disabled"}
    ```
 
-> **Note:** Quick Tunnel URLs are ephemeral and change if `cloudflared` restarts (which requires updating your URL and signing secret in Whop). Use **Option B** for long-term unattended operation.
+> **Note:** Quick Tunnel URLs are ephemeral and change if `cloudflared` restarts (which requires updating your URL and signing secret in Whop). Use **Option B** or **Option C** for long-term unattended operation.
 
 ---
 
-### Option B: Always-On Hosting (Own Domain + Automatic Free HTTPS) — Caddy + systemd
+### Option B: Managed Always-On HTTPS (No Domain or Caddy Required) — Railway / Render / Fly.io / Docker
+
+This repository ships ready-to-use deployment configs backed by the shared [`Dockerfile`](Dockerfile), with automatic `PORT` detection and persistent `/data` storage for SQLite WAL deduplication:
+
+- **Railway (`railway.json`)**
+  1. Fork or import this repository in [Railway](https://railway.com) → **New Project → Deploy from GitHub repo** (Railway auto-detects `railway.json` + `Dockerfile`).
+  2. Attach a Volume mounted at `/data` (so `receipts.db` and `events.jsonl` survive redeploys) and generate a public HTTPS domain under **Settings → Networking**.
+  3. Register `https://<your-app>.up.railway.app/events` in the Whop Developer Feed portal, copy the `whsec_...` secret, and set `ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_..."}` in Railway **Variables**.
+- **Render (`render.yaml`)**
+  1. Fork this repository, open [Render](https://render.com) → **New → Blueprint**, and select your fork. `render.yaml` provisions the Docker web service, `/healthz` check, and 1 GB `/data` persistent disk automatically.
+  2. Register `https://<your-service>.onrender.com/events` in Whop, copy your `whsec_...` secret, and set `ALPHAALGO_RECEIVER_KEYS_JSON` in Render **Environment** (plus optional `DISCORD_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`).
+- **Fly.io (`fly.toml`)**
+  1. Edit `app = "..."` in [`fly.toml`](fly.toml) to a globally unique name (or run `fly launch --no-deploy`).
+  2. Create a persistent volume and deploy:
+     ```bash
+     fly volumes create alphaalgo_data --region ewr --size 1
+     fly secrets set ALPHAALGO_RECEIVER_KEYS_JSON='{"v1":"whsec_PASTE_YOUR_SECRET_HERE"}'
+     fly deploy
+     ```
+  3. Register `https://<your-app>.fly.dev/events` in Whop and verify `curl -sS https://<your-app>.fly.dev/healthz`.
+- **Docker Compose (local / self-hosted VPS)**
+  ```bash
+  cp .env.example .env   # fill in ALPHAALGO_RECEIVER_KEYS_JSON
+  docker compose up -d --build
+  curl -sS http://127.0.0.1:9091/healthz
+  ```
+
+---
+
+### Option C: Self-Hosted VPS (Own Domain + Automatic Free HTTPS) — Caddy + systemd
 
 Recommended for reliable 24/7 telemetry logging on any Linux VPS (Ubuntu/Debian/etc.).
 
