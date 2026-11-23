@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -178,6 +179,53 @@ class TestMockReplayAndPaperLedger(unittest.TestCase):
 
         for name in SCENARIO_NAMES:
             self.assertTrue(len(build_scenario(name, self.now)) >= 2)
+
+    def test_schema_v3_doc_examples_and_ai_guides_valid(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        schema_doc = (root / "docs" / "SCHEMA_V3.md").read_text(
+            encoding="utf-8"
+        )
+        agents_doc = (root / "AGENTS.md").read_text(encoding="utf-8")
+        skill_doc = (
+            root
+            / ".agents"
+            / "skills"
+            / "alphaalgo-feed-integration"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("docs/SCHEMA_V3.md", agents_doc)
+        self.assertTrue(skill_doc.startswith("---\nname: "))
+
+        blocks = re.findall(r"```json\n(.*?)\n```", schema_doc, flags=re.S)
+        self.assertEqual(len(blocks), 3)
+
+        ledger = PaperLedger(clock=lambda: self.now)
+        rec = WebhookReceiver(
+            ":memory:",
+            {"v1": self.secret},
+            on_event=lambda ev: ledger.apply_event(ev, received_at=self.now),
+            clock=lambda: self.now,
+        )
+        try:
+            kinds_seen: set[str] = set()
+            for raw_text in blocks:
+                ev = json.loads(raw_text)
+                kinds_seen.add(ev["instrument"]["kind"])
+                raw = raw_text.encode("utf-8")
+                hdrs = sign_event(
+                    ev["event_id"], int(self.now), raw, self.secret
+                )
+                status, res = rec.receive(raw, hdrs)
+                self.assertEqual(status, 200)
+                self.assertTrue(res["accepted"])
+            self.assertEqual(
+                kinds_seen,
+                {"single_option", "vertical_credit_spread", "iron_butterfly"},
+            )
+            self.assertEqual(len(ledger.positions()), 3)
+        finally:
+            rec.close()
 
 
 if __name__ == "__main__":

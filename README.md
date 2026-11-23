@@ -23,6 +23,8 @@ alphaalgo_receiver/
   receiver.py   <-- HTTP / WSGI server + SQLite WAL deduplication
   security.py   <-- Standard Webhooks v1 HMAC-SHA256 signing & verification
   cli.py        <-- CLI flags & wiring (`python3 -m alphaalgo_receiver`)
+docs/
+  SCHEMA_V3.md  <-- Full Schema v3 field contract, JSON examples & edge cases
 examples/
   paper_ledger.py     <-- Read-only position state tracker (live & offline replay)
 scripts/
@@ -30,6 +32,8 @@ scripts/
 tests/
   test_receiver.py      <-- Unit tests for security, HTTP bounds, SQLite, handlers
   test_paper_ledger.py  <-- Unit tests for Paper Ledger & lifecycle replay
+AGENTS.md               <-- AI coding assistant guide (Cursor, Claude Code, Codex, etc.)
+.agents/skills/         <-- Reusable Agent Skill (`alphaalgo-feed-integration/SKILL.md`)
 ```
 
 ---
@@ -148,6 +152,8 @@ Every delivery from the AlphaAlgo Developer Feed includes:
 | `Webhook-Signature` | `v1,<base64(HMAC-SHA256(secret_bytes, "{id}.{timestamp}.{raw_body}"))>` |
 
 **Important:** Always verify against the **exact raw UTF-8 HTTP request body bytes** before parsing JSON. Do not parse and re-serialize JSON prior to signature verification.
+
+For the complete field-by-field contract (including `record_kind`, `instrument.complete`, `trade_revision` ordering, `expires_at`, and 1-leg / 2-leg / 4-leg JSON payloads), see **[`docs/SCHEMA_V3.md`](docs/SCHEMA_V3.md)**. Using an AI coding assistant (Cursor, Claude Code, Codex, Antigravity)? Point it at **[`AGENTS.md`](AGENTS.md)** and **[`.agents/skills/alphaalgo-feed-integration/SKILL.md`](.agents/skills/alphaalgo-feed-integration/SKILL.md)**.
 
 ---
 
