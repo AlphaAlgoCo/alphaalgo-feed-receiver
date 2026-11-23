@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run unit test suite
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Enforce 80-character Python line length
+        run: |
+          python3 -c '
+          import pathlib, sys
+          bad = [
+              f"{p}:{i} ({len(line)} chars)"
+              for p in sorted(pathlib.Path(".").rglob("*.py"))
+              for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+              if len(line) > 80
+          ]
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("All Python files satisfy line-length <= 80.")
+          '
+
+      - name: Smoke test CLI --doctor
+        run: |
+          SECRET=$(python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(generate_signing_secret())')
+          ALPHAALGO_RECEIVER_KEYS_JSON="{\"v1\":\"${SECRET}\"}" \
+            python3 -m alphaalgo_receiver --doctor --skip-clock-check --database :memory:

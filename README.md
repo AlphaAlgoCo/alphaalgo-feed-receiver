@@ -1,5 +1,7 @@
 # AlphaAlgo Developer Feed — Signed Webhook Receiver (v3)
 
+[![CI](https://github.com/AlphaAlgoCo/alphaalgo-feed-receiver/actions/workflows/ci.yml/badge.svg)](https://github.com/AlphaAlgoCo/alphaalgo-feed-receiver/actions/workflows/ci.yml)
+
 Official open-source reference receiver for the **[AlphaAlgo](https://alphaalgo.co)** Signed Developer Webhook Feed (`schema_version: 3`).
 
 Built with **zero third-party dependencies** (pure Python 3.10+ standard library), this starter kit handles:
@@ -22,6 +24,7 @@ alphaalgo_receiver/
   handlers.py   <-- START HERE: edit `on_verified_event(event)` to add your logic
   receiver.py   <-- HTTP / WSGI server + SQLite WAL deduplication
   security.py   <-- Standard Webhooks v1 HMAC-SHA256 signing & verification
+  doctor.py     <-- `--doctor` config, storage & UTC clock-skew self-check
   cli.py        <-- CLI flags & wiring (`python3 -m alphaalgo_receiver`)
 docs/
   SCHEMA_V3.md  <-- Full Schema v3 field contract, JSON examples & edge cases
@@ -31,7 +34,9 @@ scripts/
   send_mock_event.py  <-- Send single v3 events or full lifecycle replay scenarios
 tests/
   test_receiver.py      <-- Unit tests for security, HTTP bounds, SQLite, handlers
-  test_paper_ledger.py  <-- Unit tests for Paper Ledger & lifecycle replay
+  test_paper_ledger.py  <-- Unit tests for Paper Ledger, lifecycle replay & docs
+  test_doctor.py        <-- Unit tests for `--doctor` diagnostics & CI workflow
+Dockerfile / docker-compose.yml / railway.json / render.yaml / fly.toml
 AGENTS.md               <-- AI coding assistant guide (Cursor, Claude Code, Codex, etc.)
 .agents/skills/         <-- Reusable Agent Skill (`alphaalgo-feed-integration/SKILL.md`)
 ```
@@ -56,6 +61,9 @@ For local testing:
 
 ```bash
 export ALPHAALGO_RECEIVER_KEYS_JSON='{"v1":"'"$(python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(generate_signing_secret())')"'"}'
+
+# Optional: verify keys, DB writability, sinks, and UTC clock skew before starting
+python3 -m alphaalgo_receiver --doctor
 
 python3 -m alphaalgo_receiver \
   --database ./receipts.db \

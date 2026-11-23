@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 from socketserver import ThreadingMixIn
+import sys
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
+from .doctor import (
+    format_doctor_report,
+    parse_signing_keys_json,
+    run_doctor,
+)
 from .handlers import (
     AsyncEventDispatcher,
     EventHandler,
@@ -122,6 +127,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help=(
+            "Validate signing keys, storage paths, sinks, and UTC clock skew, "
+            "then exit without starting the HTTP server"
+        ),
+    )
+    parser.add_argument(
+        "--skip-clock-check",
+        action="store_true",
+        help="Skip outbound HTTPS UTC clock-skew check during --doctor",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose debug logging",
@@ -170,6 +188,21 @@ def main() -> None:
         except ValueError as exc:
             parser.error(str(exc))
 
+    raw_keys = os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "")
+    if args.doctor:
+        results = run_doctor(
+            raw_keys_json=raw_keys,
+            database=args.database,
+            port=args.port,
+            jsonl_log=args.jsonl_log,
+            discord_webhook=args.discord_webhook,
+            telegram_bot_token=args.telegram_bot_token,
+            telegram_chat_id=args.telegram_chat_id,
+            check_clock=not args.skip_clock_check,
+        )
+        print(format_doctor_report(results))
+        sys.exit(0 if all(r.ok for r in results) else 1)
+
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
 
@@ -178,18 +211,10 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    raw_keys = os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "")
     try:
-        keys = json.loads(raw_keys) if raw_keys else {}
-    except json.JSONDecodeError:
-        parser.error(
-            "ALPHAALGO_RECEIVER_KEYS_JSON must be valid JSON mapping "
-            "key_id -> whsec_..."
-        )
-    if not isinstance(keys, dict) or not keys:
-        parser.error(
-            'Set ALPHAALGO_RECEIVER_KEYS_JSON, e.g. \'{"v1": "whsec_..."}\''
-        )
+        keys = parse_signing_keys_json(raw_keys)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     async_dispatcher: AsyncEventDispatcher | None = None
     try:
