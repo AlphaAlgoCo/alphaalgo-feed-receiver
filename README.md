@@ -33,9 +33,12 @@ examples/
 scripts/
   send_mock_event.py  <-- Send single v3 events or full lifecycle replay scenarios
 tests/
-  test_receiver.py      <-- Unit tests for security, HTTP bounds, SQLite, handlers
-  test_paper_ledger.py  <-- Unit tests for Paper Ledger, lifecycle replay & docs
-  test_doctor.py        <-- Unit tests for `--doctor` diagnostics & CI workflow
+  test_receiver.py        <-- Unit tests for security, HTTP bounds, SQLite, handlers
+  test_paper_ledger.py    <-- Unit tests for Paper Ledger, lifecycle replay & docs
+  test_doctor.py          <-- Unit tests for `--doctor` diagnostics & CI workflow
+  test_deploy_configs.py  <-- Unit tests for Docker Compose HTTPS/Tunnel profiles
+deploy/
+  Caddyfile.docker        <-- Hardened automatic Let's Encrypt Caddy config for Compose
 Dockerfile / docker-compose.yml / railway.json / render.yaml / fly.toml
 AGENTS.md               <-- AI coding assistant guide (Cursor, Claude Code, Codex, etc.)
 .agents/skills/         <-- Reusable Agent Skill (`alphaalgo-feed-integration/SKILL.md`)
@@ -169,7 +172,7 @@ For the complete field-by-field contract (including `record_kind`, `instrument.c
 
 The AlphaAlgo Developer Feed delivers webhooks only to **public HTTPS URLs on port 443** with a valid CA-signed TLS certificate (no `http://`, no self-signed certs, no private/localhost IPs, and no embedded credentials, `?query`, or `#fragment`).
 
-Always terminate TLS in front of the Python receiver. Choose **Option A** (1-minute local test), **Option B** (managed HTTPS hosting on Railway / Render / Fly.io or Docker Compose — no domain or Caddy setup required), or **Option C** (self-hosted Linux VPS with Caddy + systemd).
+Always terminate TLS in front of the Python receiver. Choose **Option A** (1-minute local test), **Option B** (managed HTTPS hosting on Railway / Render / Fly.io — no VPS or domain required), or **Option C** (self-hosted VPS — one-command Docker Compose with built-in automatic Let's Encrypt HTTPS or Cloudflare Tunnel, plus manual Caddy + systemd).
 
 ---
 
@@ -217,7 +220,7 @@ Best for trying out the live read-only feed on a laptop or test VPS without buyi
 
 ---
 
-### Option B: Managed Always-On HTTPS (No Domain or Caddy Required) — Railway / Render / Fly.io / Docker
+### Option B: Managed Always-On HTTPS (No VPS or Domain Required) — Railway / Render / Fly.io
 
 This repository ships ready-to-use deployment configs backed by the shared [`Dockerfile`](Dockerfile), with automatic `PORT` detection and persistent `/data` storage for SQLite WAL deduplication:
 
@@ -237,36 +240,77 @@ This repository ships ready-to-use deployment configs backed by the shared [`Doc
      fly deploy
      ```
   3. Register `https://<your-app>.fly.dev/events` in Whop and verify `curl -sS https://<your-app>.fly.dev/healthz`.
-- **Docker Compose (local / self-hosted VPS)**
-  ```bash
-  cp .env.example .env   # fill in ALPHAALGO_RECEIVER_KEYS_JSON
-  docker compose up -d --build
-  curl -sS http://127.0.0.1:9091/healthz
-  ```
 
 ---
 
-### Option C: Self-Hosted VPS (Own Domain + Automatic Free HTTPS) — Caddy + systemd
+### Option C: Self-Hosted VPS — One-Command Docker Compose with Built-in HTTPS (Recommended)
 
-Recommended for reliable 24/7 telemetry logging on any Linux VPS (Ubuntu/Debian/etc.).
+[`docker-compose.yml`](docker-compose.yml) includes optional sidecar profiles so you do **not** have to install Python, Caddy, Certbot, or `systemd` on your VPS. Pick the profile that matches your setup:
 
-1. **Point a subdomain to your VPS:**
-   - Add a DNS `A` record (for example `feed.yourdomain.com` → your VPS public IPv4).
-   - Allow inbound TCP ports `80` and `443` in your firewall; keep port `9091` closed externally (loopback-only).
+#### C1. Own Domain + Automatic Free Let's Encrypt HTTPS (`--profile https`)
 
-2. **Install Caddy and configure automatic HTTPS** (`/etc/caddy/Caddyfile`):
+Best for 24/7 self-hosted telemetry on any Linux VPS (requires a subdomain whose DNS `A` record points to your VPS IP and open inbound TCP ports `80` and `443`; port `9091` stays loopback-only).
+
+1. **Register `https://feed.yourdomain.com/events` in Whop** (inside the AlphaAlgo Developer Feed app) and copy your one-time `whsec_...` signing secret.
+2. **Configure `.env`** (`chmod 600 .env`, never commit):
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   ```
+   Edit `.env` and set:
+   ```bash
+   ALPHAALGO_DOMAIN=feed.yourdomain.com
+   ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_PASTE_YOUR_SECRET_HERE"}
+   ```
+3. **Start both the receiver and automatic HTTPS proxy with one command:**
+   ```bash
+   docker compose --profile https up -d --build
+   ```
+   The bundled `caddy:2-alpine` sidecar ([`deploy/Caddyfile.docker`](deploy/Caddyfile.docker)) automatically obtains and renews a free Let's Encrypt certificate (persisted in the `caddy_data` volume), enforces HSTS and a 64 KB body limit, strips the `Server` header, and forwards requests over the private Docker network to `alphaalgo-receiver:9091`.
+4. **Verify:**
+   ```bash
+   curl -sS https://feed.yourdomain.com/healthz
+   # Expected: {"service": "alphaalgo-feed-receiver", "schema_version": 3, "execution": "disabled"}
+   ```
+
+#### C2. No Domain / No Open Firewall Ports (`--profile tunnel` or `--profile named-tunnel`)
+
+- **Instant temporary HTTPS (zero domain, zero account, testing only):**
+  ```bash
+  cp .env.example .env && chmod 600 .env   # fill ALPHAALGO_RECEIVER_KEYS_JSON
+  docker compose --profile tunnel up -d --build
+  docker compose --profile tunnel logs -f cloudflared-quick
+  ```
+  Copy the printed `https://<random>.trycloudflare.com` URL and register `https://<random>.trycloudflare.com/events` in Whop.
+- **Permanent fixed HTTPS without opening ports 80/443 (Cloudflare Zero Trust Named Tunnel):**
+  1. In Cloudflare Zero Trust → **Networks → Tunnels**, create a free tunnel routing your hostname (e.g. `feed.yourdomain.com`) to `http://alphaalgo-receiver:9091`, and copy the Tunnel Token.
+  2. Set `CLOUDFLARE_TUNNEL_TOKEN=...` and `ALPHAALGO_RECEIVER_KEYS_JSON=...` in `.env`, then run:
+     ```bash
+     docker compose --profile named-tunnel up -d --build
+     ```
+
+#### C3. Bring Your Own Reverse Proxy (Default Profile)
+
+If your VPS already runs Nginx, Caddy, or Traefik on ports `80`/`443`, run the default Compose profile without any HTTPS sidecar — it binds strictly to `127.0.0.1:9091` and will not touch ports `80`/`443`:
+
+```bash
+cp .env.example .env && chmod 600 .env
+docker compose up -d --build
+curl -sS http://127.0.0.1:9091/healthz
+```
+
+#### C4. Bare-Metal Linux VPS (No Docker) — Host Caddy + systemd
+
+Prefer running Python directly on Ubuntu/Debian without Docker?
+
+1. Point a subdomain DNS `A` record (`feed.yourdomain.com` → VPS IPv4), open inbound TCP `80`/`443`, and keep `9091` closed externally.
+2. Install Caddy, configure `/etc/caddy/Caddyfile`, and reload (`sudo systemctl reload caddy`):
    ```caddyfile
    feed.yourdomain.com {
        reverse_proxy 127.0.0.1:9091
    }
    ```
-   Reload Caddy (`sudo systemctl reload caddy`). Caddy automatically obtains and renews a free Let's Encrypt TLS certificate for `feed.yourdomain.com`.
-
-3. **Register `https://feed.yourdomain.com/events` in Whop:**
-   - Open the **AlphaAlgo Developer Feed** app in Whop, save `https://feed.yourdomain.com/events`, and copy the one-time `whsec_...` secret.
-
-4. **Store your signing secret privately (`chmod 600`):**
-   Create `/etc/alphaalgo-receiver.env` (never commit this file to git):
+3. Register `https://feed.yourdomain.com/events` in Whop and save the one-time `whsec_...` secret in `/etc/alphaalgo-receiver.env` (`chmod 600`):
    ```bash
    ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_PASTE_YOUR_SECRET_HERE"}
    ALPHAALGO_DB_PATH=/var/lib/alphaalgo-receiver/receipts.db
@@ -278,8 +322,7 @@ Recommended for reliable 24/7 telemetry logging on any Linux VPS (Ubuntu/Debian/
    sudo chmod 600 /etc/alphaalgo-receiver.env
    sudo install -d -o youruser -g youruser -m 0700 /var/lib/alphaalgo-receiver
    ```
-
-5. **Run continuously with `systemd`** (`/etc/systemd/system/alphaalgo-receiver.service`):
+4. Create `/etc/systemd/system/alphaalgo-receiver.service`:
    ```ini
    [Unit]
    Description=AlphaAlgo Feed v3 Signed Webhook Receiver (Read-Only Telemetry)
@@ -298,7 +341,7 @@ Recommended for reliable 24/7 telemetry logging on any Linux VPS (Ubuntu/Debian/
    [Install]
    WantedBy=multi-user.target
    ```
-   Enable and start it:
+   Enable and verify:
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable --now alphaalgo-receiver.service

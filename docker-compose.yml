@@ -3,7 +3,8 @@ services:
     build: .
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       ALPHAALGO_HOST: "0.0.0.0"
       ALPHAALGO_PORT: "9091"
@@ -11,10 +12,97 @@ services:
       ALPHAALGO_JSONL_LOG: "/data/events.jsonl"
       ALPHAALGO_ASYNC_HANDLERS: "true"
     ports:
-      # Bound to loopback by default; terminate public HTTPS via Caddy/nginx.
+      # Bound to loopback only; terminate public HTTPS via a profile below
+      # (--profile https / --profile tunnel / --profile named-tunnel) or your
+      # own host reverse proxy.
       - "127.0.0.1:9091:9091"
     volumes:
       - receiver_data:/data
+    security_opt:
+      - no-new-privileges:true
+
+  # One-command automatic Let's Encrypt HTTPS on your own VPS domain.
+  # Usage:
+  #   1. Point DNS A record (e.g. feed.yourdomain.com) to your VPS public IP.
+  #   2. Set ALPHAALGO_DOMAIN=feed.yourdomain.com in .env.
+  #   3. Run: docker compose --profile https up -d --build
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      alphaalgo-receiver:
+        condition: service_healthy
+    environment:
+      ALPHAALGO_DOMAIN: "${ALPHAALGO_DOMAIN:-}"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >
+        if [ -z "$$ALPHAALGO_DOMAIN" ]; then
+          echo "ERROR: Set ALPHAALGO_DOMAIN in .env (e.g. feed.yourdomain.com)" >&2;
+          exit 1;
+        fi;
+        case "$$ALPHAALGO_DOMAIN" in
+          *"://"*|*"/"*|*" "*)
+            echo "ERROR: ALPHAALGO_DOMAIN must be a hostname only (e.g. feed.yourdomain.com)" >&2;
+            exit 1 ;;
+        esac;
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+
+  # Instant zero-domain temporary HTTPS tunnel (Cloudflare Quick Tunnel).
+  # Usage:
+  #   docker compose --profile tunnel up -d --build
+  #   docker compose --profile tunnel logs -f cloudflared-quick
+  cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    depends_on:
+      alphaalgo-receiver:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://alphaalgo-receiver:9091
+    security_opt:
+      - no-new-privileges:true
+
+  # Always-on fixed HTTPS via Cloudflare Zero Trust Named Tunnel (no open
+  # inbound ports required on your VPS firewall).
+  # Usage:
+  #   1. Create a Tunnel in Cloudflare Zero Trust pointing to
+  #      http://alphaalgo-receiver:9091 and copy its token.
+  #   2. Set CLOUDFLARE_TUNNEL_TOKEN=... in .env.
+  #   3. Run: docker compose --profile named-tunnel up -d --build
+  cloudflared-named:
+    image: cloudflare/cloudflared:latest
+    profiles: ["named-tunnel"]
+    restart: unless-stopped
+    depends_on:
+      alphaalgo-receiver:
+        condition: service_healthy
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:-}"
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   receiver_data:
+  caddy_data:
+  caddy_config:

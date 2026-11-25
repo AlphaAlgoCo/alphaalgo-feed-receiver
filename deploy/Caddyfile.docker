@@ -1,0 +1,20 @@
+# Automatic HTTPS reverse proxy for AlphaAlgo Developer Feed v3 receiver.
+# Used by: docker compose --profile https up -d --build
+#
+# Caddy automatically obtains and renews a free Let's Encrypt TLS certificate
+# for {$ALPHAALGO_DOMAIN} and forwards traffic to the internal receiver on 9091.
+{$ALPHAALGO_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 64KB
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+	}
+
+	reverse_proxy alphaalgo-receiver:9091
+}
