@@ -145,9 +145,11 @@ python3 -m alphaalgo_receiver \
   --jsonl-log ./events.jsonl \
   --discord-webhook "https://discord.com/api/webhooks/..." \
   --telegram-bot-token "123456789:AA..." \
-  --telegram-chat-id "-1001234567890" \
+  --telegram-chat-id "123456789" \
   --async-handlers
 ```
+
+> **Personal Use Only — No Redistribution:** Built-in Discord and Telegram sinks are strictly for the active subscriber's own private alerting (e.g., personal DM or private server). Forwarding, broadcasting, or reselling AlphaAlgo feed data to third parties, public channels, or paid groups violates AlphaAlgo's Subscription Terms and results in immediate access termination.
 
 ---
 

@@ -50,6 +50,7 @@ class TestDeployConfigs(unittest.TestCase):
         self.assertIn("ALPHAALGO_DOMAIN=feed.yourdomain.com", text)
         self.assertIn("CLOUDFLARE_TUNNEL_TOKEN=", text)
         self.assertIn("whsec_REPLACE_WITH_YOUR_SIGNING_SECRET", text)
+        self.assertNotIn("TELEGRAM_CHAT_ID=-100", text)
 
 
 if __name__ == "__main__":
