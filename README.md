@@ -277,13 +277,23 @@ Best for 24/7 self-hosted telemetry on any Linux VPS (requires a subdomain whose
 
 #### C2. No Domain / No Open Firewall Ports (`--profile tunnel` or `--profile named-tunnel`)
 
+> Use modern Docker Compose v2 (`docker compose` with a space, not legacy `docker-compose`).
+
 - **Instant temporary HTTPS (zero domain, zero account, testing only):**
-  ```bash
-  cp .env.example .env && chmod 600 .env   # fill ALPHAALGO_RECEIVER_KEYS_JSON
-  docker compose --profile tunnel up -d --build
-  docker compose --profile tunnel logs -f cloudflared-quick
-  ```
-  Copy the printed `https://<random>.trycloudflare.com` URL and register `https://<random>.trycloudflare.com/events` in Whop.
+  1. Start with a temporary placeholder signing key so `alphaalgo-receiver` becomes healthy and `cloudflared-quick` prints your public URL:
+     ```bash
+     cp .env.example .env && chmod 600 .env
+     # Replace the placeholder key in .env with any valid dummy whsec_ key first:
+     python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(f"ALPHAALGO_RECEIVER_KEYS_JSON={{\"v1\":\"{generate_signing_secret()}\"}}")'
+     docker compose --profile tunnel up -d --build
+     docker compose --profile tunnel logs -f cloudflared-quick
+     ```
+  2. Copy the printed `https://<random>.trycloudflare.com` URL (press `Ctrl+C` to exit logs — containers stay running), register `https://<random>.trycloudflare.com/events` in Whop, and paste the real one-time `whsec_...` secret into `.env`.
+  3. **Reload only `alphaalgo-receiver` without restarting `cloudflared-quick`** so the public tunnel URL does **not** change:
+     ```bash
+     docker compose --profile tunnel up -d --no-deps --force-recreate alphaalgo-receiver
+     curl -sS https://<random>.trycloudflare.com/healthz
+     ```
 - **Permanent fixed HTTPS without opening ports 80/443 (Cloudflare Zero Trust Named Tunnel):**
   1. In Cloudflare Zero Trust → **Networks → Tunnels**, create a free tunnel routing your hostname (e.g. `feed.yourdomain.com`) to `http://alphaalgo-receiver:9091`, and copy the Tunnel Token.
   2. Set `CLOUDFLARE_TUNNEL_TOKEN=...` and `ALPHAALGO_RECEIVER_KEYS_JSON=...` in `.env`, then run:
