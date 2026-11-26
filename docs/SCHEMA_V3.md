@@ -16,7 +16,7 @@ Every webhook delivery is an HTTP `POST` with `Content-Type: application/json` t
 | :--- | :--- | :--- |
 | `Webhook-Id` | Canonical `event_id` (e.g., `aa3-<64-hex>`) | Must match `event["event_id"]` in JSON body |
 | `Webhook-Timestamp` | Unix epoch seconds (ASCII integer string) | Must be within `±300` seconds of receiver UTC clock |
-| `Webhook-Key-Id` | Key identifier (e.g., `v1`, `v2`) | Selects the active `whsec_...` secret (supports zero-downtime key rotation) |
+| `Webhook-Key-Id` | Optional rotation label (e.g., `v1`, `v2`) | Informational metadata; receivers verifying directly with `ALPHAALGO_SIGNING_SECRET` do not need to match key IDs |
 | `Webhook-Signature` | Space-separated list of `v1,<base64>` signatures | Constant-time HMAC-SHA256 match against exact raw body bytes |
 
 ### Signature Computation
@@ -35,7 +35,7 @@ expected_sig   = "v1," + base64_encode(HMAC_SHA256(secret_bytes, signed_payload)
 | :--- | :--- |
 | `200 OK` | Verified and durably persisted (`duplicate: false`), OR exact retry of an already-persisted `event_id` (`duplicate: true`) |
 | `400 Bad Request` | Malformed HTTP framing, wrong `Content-Type`, body > 64 KiB, non-standard JSON (`NaN`/`Infinity`), `schema_version != 3`, or `Webhook-Id != body.event_id` |
-| `401 Unauthorized` | Missing/malformed headers, stale timestamp (`> ±300s`), unknown `Webhook-Key-Id`, or invalid HMAC signature |
+| `401 Unauthorized` | Missing/malformed headers, stale timestamp (`> ±300s`), or invalid HMAC signature (or unknown `Webhook-Key-Id` when using legacy key-ID mapping) |
 | `409 Conflict` | Same `event_id` received again with a **different** raw payload SHA-256 hash |
 | `503 Service Unavailable` | Transient receiver storage/internal error (signals upstream retry) |
 

@@ -21,7 +21,7 @@ from .handlers import (
     _validate_discord_url,
     _validate_telegram_config,
 )
-from .security import validate_signing_keys
+from .security import ValidatedKeys, validate_signing_keys
 
 _DEFAULT_CLOCK_URL = "https://alphaalgo.co"
 _CLOCK_WARN_SECONDS = 60.0
@@ -44,8 +44,23 @@ class CheckResult:
         return "WARN" if self.warning else "PASS"
 
 
+def parse_signing_secret(raw_secret: str) -> tuple[str, ...]:
+    """Parse ``ALPHAALGO_SIGNING_SECRET`` (single or comma-separated)."""
+    stripped = raw_secret.strip()
+    if not stripped:
+        raise ValueError(
+            'Set ALPHAALGO_SIGNING_SECRET="whsec_..." (copy from Whop portal)'
+        )
+    parts = [part.strip() for part in stripped.split(",")]
+    if any(not part for part in parts):
+        raise ValueError(
+            "ALPHAALGO_SIGNING_SECRET contains an empty entry between commas"
+        )
+    return tuple(parts)
+
+
 def parse_signing_keys_json(raw_keys: str) -> dict[str, Any]:
-    """Parse ``ALPHAALGO_RECEIVER_KEYS_JSON`` into a non-empty key dict."""
+    """Parse legacy ``ALPHAALGO_RECEIVER_KEYS_JSON`` into a key dict."""
     try:
         keys = json.loads(raw_keys) if raw_keys else {}
     except json.JSONDecodeError as exc:
@@ -55,9 +70,32 @@ def parse_signing_keys_json(raw_keys: str) -> dict[str, Any]:
         ) from exc
     if not isinstance(keys, dict) or not keys:
         raise ValueError(
-            'Set ALPHAALGO_RECEIVER_KEYS_JSON, e.g. \'{"v1": "whsec_..."}\''
+            'Set ALPHAALGO_SIGNING_SECRET="whsec_..." '
+            '(or legacy ALPHAALGO_RECEIVER_KEYS_JSON)'
         )
     return keys
+
+
+def resolve_signing_keys(
+    *,
+    raw_secret: str = "",
+    raw_keys_json: str = "",
+) -> ValidatedKeys:
+    """Resolve and validate signing keys from env values (no ambiguity)."""
+    has_secret = bool(raw_secret.strip())
+    has_json = bool(raw_keys_json.strip())
+    if has_secret and has_json:
+        raise ValueError(
+            "Set either ALPHAALGO_SIGNING_SECRET or "
+            "ALPHAALGO_RECEIVER_KEYS_JSON, not both"
+        )
+    if has_secret:
+        return validate_signing_keys(parse_signing_secret(raw_secret))
+    if has_json:
+        return validate_signing_keys(parse_signing_keys_json(raw_keys_json))
+    raise ValueError(
+        'Set ALPHAALGO_SIGNING_SECRET="whsec_..." (copy from Whop portal)'
+    )
 
 
 def _probe_remote_utc(url: str, timeout: float = 3.0) -> float:
@@ -155,7 +193,8 @@ def _check_clock_skew(
 
 def run_doctor(
     *,
-    raw_keys_json: str,
+    raw_secret: str = "",
+    raw_keys_json: str = "",
     database: str,
     port: int,
     jsonl_log: str = "",
@@ -185,16 +224,18 @@ def run_doctor(
         )
 
     try:
-        keys = parse_signing_keys_json(raw_keys_json)
-        validated = validate_signing_keys(keys)
-        key_ids = ", ".join(sorted(validated.keys()))
-        results.append(
-            CheckResult(
-                "signing_keys",
-                True,
-                f"{len(validated)} valid key(s) configured: {key_ids}",
-            )
+        validated = resolve_signing_keys(
+            raw_secret=raw_secret, raw_keys_json=raw_keys_json
         )
+        if isinstance(validated, dict):
+            key_ids = ", ".join(sorted(validated.keys()))
+            detail = f"{len(validated)} valid key(s) configured: {key_ids}"
+        else:
+            detail = (
+                f"{len(validated)} valid signing secret(s) configured "
+                "(ALPHAALGO_SIGNING_SECRET)"
+            )
+        results.append(CheckResult("signing_keys", True, detail))
     except ValueError as exc:
         results.append(CheckResult("signing_keys", False, str(exc)))
 

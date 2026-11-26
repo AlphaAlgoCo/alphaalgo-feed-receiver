@@ -10,7 +10,7 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from .doctor import (
     format_doctor_report,
-    parse_signing_keys_json,
+    resolve_signing_keys,
     run_doctor,
 )
 from .handlers import (
@@ -188,9 +188,11 @@ def main() -> None:
         except ValueError as exc:
             parser.error(str(exc))
 
+    raw_secret = os.environ.get("ALPHAALGO_SIGNING_SECRET", "")
     raw_keys = os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "")
     if args.doctor:
         results = run_doctor(
+            raw_secret=raw_secret,
             raw_keys_json=raw_keys,
             database=args.database,
             port=args.port,
@@ -212,7 +214,9 @@ def main() -> None:
     )
 
     try:
-        keys = parse_signing_keys_json(raw_keys)
+        keys = resolve_signing_keys(
+            raw_secret=raw_secret, raw_keys_json=raw_keys
+        )
     except ValueError as exc:
         parser.error(str(exc))
 

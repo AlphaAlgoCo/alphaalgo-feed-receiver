@@ -22,7 +22,12 @@ import time
 from typing import Any, Callable, Mapping
 
 from .handlers import EventHandler, on_verified_event
-from .security import FeedSecurityError, validate_signing_keys, verify_event
+from .security import (
+    FeedSecurityError,
+    SigningKeys,
+    validate_signing_keys,
+    verify_event,
+)
 
 logger = logging.getLogger("alphaalgo_receiver")
 
@@ -50,13 +55,13 @@ class WebhookReceiver:
     def __init__(
         self,
         database: str | os.PathLike[str],
-        keys: Mapping[str, str | bytes],
+        keys: SigningKeys,
         *,
         on_event: EventHandler | None = on_verified_event,
         clock: Callable[[], float] | None = None,
         max_age: int = 300,
     ) -> None:
-        # Fail fast if any configured key_id or whsec_ secret is malformed.
+        # Fail fast if any configured whsec_ secret or key_id is malformed.
         self.keys = validate_signing_keys(keys)
         self.on_event = on_event
         self.clock = clock

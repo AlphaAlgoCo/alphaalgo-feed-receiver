@@ -74,7 +74,7 @@ Reuse `examples/paper_ledger.py` (`PaperLedger`) as the blueprint:
 
 | Symptom | Most Likely Cause | Fix |
 | :--- | :--- | :--- |
-| `401 signature_rejected` | Body parsed & re-serialized before verification, wrong `whsec_` secret, or clock skew > ±300s | Verify exact raw bytes; check `ALPHAALGO_RECEIVER_KEYS_JSON` key ID (`v1`/`v2`); sync NTP clock |
+| `401 signature_rejected` | Body parsed & re-serialized before verification, wrong `whsec_` secret, or clock skew > ±300s | Verify exact raw bytes; check `ALPHAALGO_SIGNING_SECRET` (or `ALPHAALGO_RECEIVER_KEYS_JSON` key ID if using legacy mode); sync NTP clock |
 | `400 invalid_event_envelope` | `Content-Type` not `application/json`, body > 64 KiB, `schema_version != 3`, or `Webhook-Id != event_id` | Inspect HTTP proxy framing (avoid chunked encoding or body rewrites) |
 | `409 event_id_collision` | Same `event_id` sent with mutated bytes | Expected protection; ensure synthetic test events use distinct `source_event_id` |
 | `option_symbol` is `None` | Event is a 2-leg `vertical_credit_spread` or 4-leg `iron_butterfly` | Always iterate `event["instrument"]["legs"]` |

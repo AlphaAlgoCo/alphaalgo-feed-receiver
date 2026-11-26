@@ -10,6 +10,8 @@ from alphaalgo_receiver import generate_signing_secret
 from alphaalgo_receiver.doctor import (
     format_doctor_report,
     parse_signing_keys_json,
+    parse_signing_secret,
+    resolve_signing_keys,
     run_doctor,
 )
 
@@ -25,6 +27,45 @@ class TestDoctor(unittest.TestCase):
         for bad in ("", "not-json", "[]", "{}"):
             with self.assertRaises(ValueError):
                 parse_signing_keys_json(bad)
+
+    def test_parse_and_resolve_single_and_rotated_signing_secret(
+        self,
+    ) -> None:
+        self.assertEqual(
+            parse_signing_secret(f" {self.secret_v1} "), (self.secret_v1,)
+        )
+        self.assertEqual(
+            parse_signing_secret(f"{self.secret_v1}, {self.secret_v2}"),
+            (self.secret_v1, self.secret_v2),
+        )
+        for bad in ("", "   ", f"{self.secret_v1},", f",{self.secret_v2}"):
+            with self.assertRaises(ValueError):
+                parse_signing_secret(bad)
+
+        resolved = resolve_signing_keys(
+            raw_secret=f"{self.secret_v1},{self.secret_v2}"
+        )
+        self.assertIsInstance(resolved, tuple)
+        self.assertEqual(len(resolved), 2)
+
+        # Setting both env vars must fail fast to avoid stale secret ambiguity.
+        with self.assertRaises(ValueError):
+            resolve_signing_keys(
+                raw_secret=self.secret_v1,
+                raw_keys_json=json.dumps({"v1": self.secret_v1}),
+            )
+
+        results = run_doctor(
+            raw_secret=self.secret_v1,
+            database=":memory:",
+            port=9091,
+            check_clock=False,
+        )
+        self.assertTrue(all(r.ok for r in results))
+        report = format_doctor_report(results)
+        self.assertIn("ALPHAALGO_SIGNING_SECRET", report)
+        self.assertNotIn(self.secret_v1, report)
+        self.assertNotIn("whsec_", report)
 
     def test_doctor_happy_path_redacts_all_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

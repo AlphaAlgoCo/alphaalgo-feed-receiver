@@ -48,6 +48,7 @@ from alphaalgo_receiver import (  # noqa: E402
     format_event_summary,
 )
 from alphaalgo_receiver.cli import serve_receiver  # noqa: E402
+from alphaalgo_receiver.doctor import resolve_signing_keys  # noqa: E402
 
 
 def _finite(value: Any) -> float | None:
@@ -436,12 +437,13 @@ def replay_events(
 
 
 def _serve_live_ledger(args: argparse.Namespace) -> None:
-    raw_keys = os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "")
-    keys = json.loads(raw_keys) if raw_keys else {}
-    if not isinstance(keys, dict) or not keys:
-        raise SystemExit(
-            'Set ALPHAALGO_RECEIVER_KEYS_JSON, e.g. \'{"v1":"whsec_..."}\''
+    try:
+        keys = resolve_signing_keys(
+            raw_secret=os.environ.get("ALPHAALGO_SIGNING_SECRET", ""),
+            raw_keys_json=os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", ""),
         )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
     ledger = PaperLedger()
     if args.database != ":memory:" and Path(args.database).exists():

@@ -6,9 +6,9 @@ Official open-source reference receiver for the **[AlphaAlgo](https://alphaalgo.
 
 Built with **zero third-party dependencies** (pure Python 3.10+ standard library), this starter kit handles:
 
-- **Raw-byte HMAC-SHA256 verification** following the [Standard Webhooks v1](https://www.standardwebhooks.com/) signing convention (`Webhook-Id`, `Webhook-Timestamp`, `Webhook-Signature`, `Webhook-Key-Id`)
+- **Raw-byte HMAC-SHA256 verification** following the [Standard Webhooks v1](https://www.standardwebhooks.com/) signing convention (`Webhook-Id`, `Webhook-Timestamp`, `Webhook-Signature`, optional `Webhook-Key-Id`)
 - **Replay protection** (strict ±300s timestamp window)
-- **Zero-downtime key rotation** (map multiple `key_id -> whsec_...` secrets simultaneously)
+- **Simple single-secret setup** (`ALPHAALGO_SIGNING_SECRET="whsec_..."`, plus optional comma-separated secrets or legacy `ALPHAALGO_RECEIVER_KEYS_JSON` for zero-downtime key rotation)
 - **Durable SQLite (WAL) idempotency** — deduplicates retries by `event_id` and rejects mismatched payload collisions with `409 Conflict`
 - **Unified Schema v3 parsing** across all 3 first-class `instrument.kind` types (`single_option`, `vertical_credit_spread`, `iron_butterfly`) with uniform `instrument.legs[]`
 - **Clear extension point (`alphaalgo_receiver/handlers.py`)** — edit `on_verified_event(event)` or attach built-in JSONL / Discord / Telegram read-only sinks, optionally offloaded to a non-blocking `AsyncEventDispatcher` background queue
@@ -58,14 +58,14 @@ python3 -m unittest discover -s tests -q
 
 ### 2. Start the receiver with a local test key
 
-For production, copy your `key_id` and `whsec_...` signing secret from the **AlphaAlgo Developer Feed** portal inside your [Whop membership](https://whop.com/alphaalgoco/).
+For production, copy your one-time `whsec_...` signing secret from the **AlphaAlgo Developer Feed** portal inside your [Whop membership](https://whop.com/alphaalgoco/).
 
 For local testing:
 
 ```bash
-export ALPHAALGO_RECEIVER_KEYS_JSON='{"v1":"'"$(python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(generate_signing_secret())')"'"}'
+export ALPHAALGO_SIGNING_SECRET="$(python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(generate_signing_secret())')"
 
-# Optional: verify keys, DB writability, sinks, and UTC clock skew before starting
+# Optional: verify secret, DB writability, sinks, and UTC clock skew before starting
 python3 -m alphaalgo_receiver --doctor
 
 python3 -m alphaalgo_receiver \
@@ -76,7 +76,7 @@ python3 -m alphaalgo_receiver \
 
 ### 3. Send signed mock events (all 3 instrument kinds)
 
-In a second terminal (with the same `ALPHAALGO_RECEIVER_KEYS_JSON` exported):
+In a second terminal (with the same `ALPHAALGO_SIGNING_SECRET` exported):
 
 ```bash
 # 1-leg equity option fill (single_option)
@@ -161,7 +161,7 @@ Every delivery from the AlphaAlgo Developer Feed includes:
 | :--- | :--- |
 | `Webhook-Id` | Canonical `event_id` (e.g. `aa3-...`), matching `event["event_id"]` |
 | `Webhook-Timestamp` | Unix epoch seconds (integer string), verified within ±300s |
-| `Webhook-Key-Id` | Key identifier selecting which `whsec_...` secret to verify against |
+| `Webhook-Key-Id` | Optional key rotation metadata (e.g. `v1`, `v2`). Not required when verifying directly with `ALPHAALGO_SIGNING_SECRET`. |
 | `Webhook-Signature` | `v1,<base64(HMAC-SHA256(secret_bytes, "{id}.{timestamp}.{raw_body}"))>` |
 
 **Important:** Always verify against the **exact raw UTF-8 HTTP request body bytes** before parsing JSON. Do not parse and re-serialize JSON prior to signature verification.
@@ -200,12 +200,12 @@ Best for trying out the live read-only feed on a laptop or test VPS without buyi
 
 3. **Register the URL in Whop & copy your signing secret:**
    - Open the **AlphaAlgo Developer Feed** app inside your [Whop membership](https://whop.com/alphaalgoco/).
-   - Enter `https://example-words.trycloudflare.com/events` and click **Save connection**.
-   - Copy the one-time `whsec_...` signing secret shown on screen (a new connection uses key ID `v1`).
+   - Enter `https://example-words.trycloudflare.com/events` and click **Save receiver**.
+   - Copy the one-time `whsec_...` signing secret shown on screen.
 
 4. **Start the local receiver with that signing secret (in a second terminal):**
    ```bash
-   export ALPHAALGO_RECEIVER_KEYS_JSON='{"v1":"whsec_PASTE_YOUR_SECRET_HERE"}'
+   export ALPHAALGO_SIGNING_SECRET="whsec_PASTE_YOUR_SECRET_HERE"
    python3 -m alphaalgo_receiver \
      --database ./receipts.db \
      --jsonl-log ./events.jsonl \
@@ -229,16 +229,16 @@ This repository ships ready-to-use deployment configs backed by the shared [`Doc
 - **Railway (`railway.json`)**
   1. Fork or import this repository in [Railway](https://railway.com) → **New Project → Deploy from GitHub repo** (Railway auto-detects `railway.json` + `Dockerfile`).
   2. Attach a Volume mounted at `/data` (so `receipts.db` and `events.jsonl` survive redeploys) and generate a public HTTPS domain under **Settings → Networking**.
-  3. Register `https://<your-app>.up.railway.app/events` in the Whop Developer Feed portal, copy the `whsec_...` secret, and set `ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_..."}` in Railway **Variables**.
+  3. Register `https://<your-app>.up.railway.app/events` in the Whop Developer Feed portal, copy the `whsec_...` secret, and set `ALPHAALGO_SIGNING_SECRET=whsec_...` in Railway **Variables**.
 - **Render (`render.yaml`)**
   1. Fork this repository, open [Render](https://render.com) → **New → Blueprint**, and select your fork. `render.yaml` provisions the Docker web service, `/healthz` check, and 1 GB `/data` persistent disk automatically.
-  2. Register `https://<your-service>.onrender.com/events` in Whop, copy your `whsec_...` secret, and set `ALPHAALGO_RECEIVER_KEYS_JSON` in Render **Environment** (plus optional `DISCORD_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`).
+  2. Register `https://<your-service>.onrender.com/events` in Whop, copy your `whsec_...` secret, and set `ALPHAALGO_SIGNING_SECRET` in Render **Environment** (plus optional `DISCORD_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`).
 - **Fly.io (`fly.toml`)**
   1. Edit `app = "..."` in [`fly.toml`](fly.toml) to a globally unique name (or run `fly launch --no-deploy`).
   2. Create a persistent volume and deploy:
      ```bash
      fly volumes create alphaalgo_data --region ewr --size 1
-     fly secrets set ALPHAALGO_RECEIVER_KEYS_JSON='{"v1":"whsec_PASTE_YOUR_SECRET_HERE"}'
+     fly secrets set ALPHAALGO_SIGNING_SECRET="whsec_PASTE_YOUR_SECRET_HERE"
      fly deploy
      ```
   3. Register `https://<your-app>.fly.dev/events` in Whop and verify `curl -sS https://<your-app>.fly.dev/healthz`.
@@ -262,7 +262,7 @@ Best for 24/7 self-hosted telemetry on any Linux VPS (requires a subdomain whose
    Edit `.env` and set:
    ```bash
    ALPHAALGO_DOMAIN=feed.yourdomain.com
-   ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_PASTE_YOUR_SECRET_HERE"}
+   ALPHAALGO_SIGNING_SECRET=whsec_PASTE_YOUR_SECRET_HERE
    ```
 3. **Start both the receiver and automatic HTTPS proxy with one command:**
    ```bash
@@ -280,11 +280,11 @@ Best for 24/7 self-hosted telemetry on any Linux VPS (requires a subdomain whose
 > Use modern Docker Compose v2 (`docker compose` with a space, not legacy `docker-compose`).
 
 - **Instant temporary HTTPS (zero domain, zero account, testing only):**
-  1. Start with a temporary placeholder signing key so `alphaalgo-receiver` becomes healthy and `cloudflared-quick` prints your public URL:
+  1. Start with a temporary placeholder signing secret so `alphaalgo-receiver` becomes healthy and `cloudflared-quick` prints your public URL:
      ```bash
      cp .env.example .env && chmod 600 .env
-     # Replace the placeholder key in .env with any valid dummy whsec_ key first:
-     python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(f"ALPHAALGO_RECEIVER_KEYS_JSON={{\"v1\":\"{generate_signing_secret()}\"}}")'
+     # Replace the placeholder secret in .env with any valid dummy whsec_ secret first:
+     python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(f"ALPHAALGO_SIGNING_SECRET={generate_signing_secret()}")'
      docker compose --profile tunnel up -d --build
      docker compose --profile tunnel logs -f cloudflared-quick
      ```
@@ -296,7 +296,7 @@ Best for 24/7 self-hosted telemetry on any Linux VPS (requires a subdomain whose
      ```
 - **Permanent fixed HTTPS without opening ports 80/443 (Cloudflare Zero Trust Named Tunnel):**
   1. In Cloudflare Zero Trust → **Networks → Tunnels**, create a free tunnel routing your hostname (e.g. `feed.yourdomain.com`) to `http://alphaalgo-receiver:9091`, and copy the Tunnel Token.
-  2. Set `CLOUDFLARE_TUNNEL_TOKEN=...` and `ALPHAALGO_RECEIVER_KEYS_JSON=...` in `.env`, then run:
+  2. Set `CLOUDFLARE_TUNNEL_TOKEN=...` and `ALPHAALGO_SIGNING_SECRET=whsec_...` in `.env`, then run:
      ```bash
      docker compose --profile named-tunnel up -d --build
      ```
@@ -324,7 +324,7 @@ Prefer running Python directly on Ubuntu/Debian without Docker?
    ```
 3. Register `https://feed.yourdomain.com/events` in Whop and save the one-time `whsec_...` secret in `/etc/alphaalgo-receiver.env` (`chmod 600`):
    ```bash
-   ALPHAALGO_RECEIVER_KEYS_JSON={"v1":"whsec_PASTE_YOUR_SECRET_HERE"}
+   ALPHAALGO_SIGNING_SECRET=whsec_PASTE_YOUR_SECRET_HERE
    ALPHAALGO_DB_PATH=/var/lib/alphaalgo-receiver/receipts.db
    ALPHAALGO_JSONL_LOG=/var/lib/alphaalgo-receiver/events.jsonl
    ALPHAALGO_HOST=127.0.0.1
@@ -360,15 +360,17 @@ Prefer running Python directly on Ubuntu/Debian without Docker?
    curl -sS https://feed.yourdomain.com/healthz
    ```
 
-### Zero-Downtime Key Rotation Tip
+### Replacing or Rotating Your Signing Secret
 
-When you rotate or replace a connection URL in Whop, the key ID increments (`v1` → `v2`, etc.). You can keep multiple keys active simultaneously in `ALPHAALGO_RECEIVER_KEYS_JSON` so no in-flight delivery is rejected during cutover:
+Normally, simply overwrite `ALPHAALGO_SIGNING_SECRET` with the new `whsec_...` secret from the Whop portal and restart the receiver—you do not need to track key IDs (`v1`, `v2`, etc.).
 
-```json
-{"v1":"whsec_OLD_SECRET","v2":"whsec_NEW_SECRET"}
+If you ever need zero-downtime rotation during market hours, temporarily comma-separate both secrets so in-flight and new deliveries both verify:
+
+```bash
+ALPHAALGO_SIGNING_SECRET=whsec_NEW_SECRET,whsec_OLD_SECRET
 ```
 
-Once verified, remove the old key from the JSON map and restart the receiver.
+Once cutover completes, remove the old secret and restart. (Legacy `ALPHAALGO_RECEIVER_KEYS_JSON` remains supported for backwards compatibility.)
 
 ---
 

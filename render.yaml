@@ -10,7 +10,7 @@ services:
       mountPath: /data
       sizeGB: 1
     envVars:
-      - key: ALPHAALGO_RECEIVER_KEYS_JSON
+      - key: ALPHAALGO_SIGNING_SECRET
         sync: false
       - key: ALPHAALGO_HOST
         value: "0.0.0.0"

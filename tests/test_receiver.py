@@ -133,6 +133,88 @@ class TestSecurity(unittest.TestCase):
                 self.body, bad_ts, {"v99": self.secret}, now=self.now
             )
 
+    def test_verify_event_direct_secret_ignores_key_id_and_rotates(
+        self,
+    ) -> None:
+        other = generate_signing_secret()
+        # Any Webhook-Key-Id (v1, v2, v99) or omitted header verifies directly.
+        for key_id in ("v1", "v2", "v99"):
+            headers = sign_event(
+                "aa3-direct-1",
+                int(self.now),
+                self.body,
+                self.secret,
+                key_id=key_id,
+            )
+            self.assertEqual(
+                verify_event(self.body, headers, self.secret, now=self.now),
+                "aa3-direct-1",
+            )
+            # Comma-separated / sequence rotation verifies either secret.
+            self.assertEqual(
+                verify_event(
+                    self.body, headers, (other, self.secret), now=self.now
+                ),
+                "aa3-direct-1",
+            )
+
+        no_kid = sign_event(
+            "aa3-direct-2", int(self.now), self.body, self.secret
+        )
+        no_kid.pop("Webhook-Key-Id")
+        self.assertEqual(
+            verify_event(self.body, no_kid, self.secret, now=self.now),
+            "aa3-direct-2",
+        )
+
+        # Wrong secret and blank signature header both fail cleanly.
+        with self.assertRaises(FeedSecurityError):
+            verify_event(self.body, no_kid, other, now=self.now)
+        blank_sig = dict(no_kid, **{"Webhook-Signature": "   "})
+        with self.assertRaises(FeedSecurityError):
+            verify_event(self.body, blank_sig, self.secret, now=self.now)
+        # Mutable bytearray and oversized key lists are rejected.
+        with self.assertRaises(FeedSecurityError):
+            validate_signing_keys(bytearray(32))  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            validate_signing_keys([self.secret] * 17)
+        # Duplicate secrets in a sequence are deduplicated cleanly.
+        self.assertEqual(
+            len(validate_signing_keys([self.secret, self.secret])), 1
+        )
+
+    def test_receiver_accepts_direct_secret_across_key_id_changes(
+        self,
+    ) -> None:
+        rec = WebhookReceiver(
+            ":memory:",
+            self.secret,
+            on_event=None,
+            clock=lambda: self.now,
+        )
+        try:
+            ev = {
+                "schema_version": 3,
+                "event_id": "aa3-direct-rec-1",
+                "trade_ref": "S608-1125-01",
+                "event_kind": "entry",
+                "strategy_id": "S608",
+            }
+            body = json.dumps(ev).encode("utf-8")
+            headers = sign_event(
+                "aa3-direct-rec-1",
+                int(self.now),
+                body,
+                self.secret,
+                key_id="v4",
+            )
+            status, payload = rec.receive(body, headers)
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["accepted"])
+            self.assertFalse(payload["duplicate"])
+        finally:
+            rec.close()
+
     def test_verify_event_consume_callback(self) -> None:
         headers = sign_event(
             "aa3-sec-1", int(self.now), self.body, self.secret
@@ -704,7 +786,7 @@ class TestHandlers(unittest.TestCase):
         render = (root / "render.yaml").read_text(encoding="utf-8")
         self.assertIn("healthCheckPath: /healthz", render)
         self.assertIn("mountPath: /data", render)
-        self.assertIn("ALPHAALGO_RECEIVER_KEYS_JSON", render)
+        self.assertIn("ALPHAALGO_SIGNING_SECRET", render)
 
         compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn("127.0.0.1:9091:9091", compose)

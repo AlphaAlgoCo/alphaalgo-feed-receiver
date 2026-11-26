@@ -43,5 +43,7 @@ jobs:
       - name: Smoke test CLI --doctor
         run: |
           SECRET=$(python3 -c 'from alphaalgo_receiver import generate_signing_secret; print(generate_signing_secret())')
+          ALPHAALGO_SIGNING_SECRET="${SECRET}" \
+            python3 -m alphaalgo_receiver --doctor --skip-clock-check --database :memory:
           ALPHAALGO_RECEIVER_KEYS_JSON="{\"v1\":\"${SECRET}\"}" \
             python3 -m alphaalgo_receiver --doctor --skip-clock-check --database :memory:

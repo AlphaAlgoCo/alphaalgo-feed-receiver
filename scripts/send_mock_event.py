@@ -30,6 +30,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from alphaalgo_receiver.doctor import (  # noqa: E402
+    parse_signing_keys_json,
+    parse_signing_secret,
+)
 from alphaalgo_receiver.security import sign_event  # noqa: E402
 
 SINGLE_EVENT_KINDS = (
@@ -772,10 +776,33 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    keys = json.loads(os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "{}"))
-    if args.key_id not in keys:
+    raw_secret = os.environ.get("ALPHAALGO_SIGNING_SECRET", "").strip()
+    raw_keys = os.environ.get("ALPHAALGO_RECEIVER_KEYS_JSON", "").strip()
+    if raw_secret and raw_keys:
         parser.error(
-            f"Key ID {args.key_id!r} not found in ALPHAALGO_RECEIVER_KEYS_JSON"
+            "Set either ALPHAALGO_SIGNING_SECRET or "
+            "ALPHAALGO_RECEIVER_KEYS_JSON, not both"
+        )
+    if raw_secret:
+        try:
+            signing_secret = parse_signing_secret(raw_secret)[0]
+        except ValueError as exc:
+            parser.error(str(exc))
+    elif raw_keys:
+        try:
+            keys = parse_signing_keys_json(raw_keys)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.key_id not in keys:
+            parser.error(
+                f"Key ID {args.key_id!r} not found in "
+                "ALPHAALGO_RECEIVER_KEYS_JSON"
+            )
+        signing_secret = keys[args.key_id]
+    else:
+        parser.error(
+            'Set ALPHAALGO_SIGNING_SECRET="whsec_..." '
+            "(or legacy ALPHAALGO_RECEIVER_KEYS_JSON)"
         )
 
     now = int(time.time())
@@ -796,7 +823,7 @@ def main() -> None:
         status, text = send_step(
             args.url,
             step,
-            keys[args.key_id],
+            signing_secret,
             key_id=args.key_id,
             now=int(time.time()),
         )

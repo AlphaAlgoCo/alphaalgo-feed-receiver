@@ -17,7 +17,12 @@ import math
 import re
 import secrets
 import time
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence, Union
+
+SigningKeys = Union[
+    str, bytes, Sequence[Union[str, bytes]], Mapping[str, Union[str, bytes]]
+]
+ValidatedKeys = Union[dict[str, bytes], tuple[bytes, ...]]
 
 
 class FeedSecurityError(ValueError):
@@ -27,6 +32,7 @@ class FeedSecurityError(ValueError):
 _EVENT_ID_RE = re.compile(r"[A-Za-z0-9_.:\-]{1,256}\Z")
 _KEY_ID_RE = re.compile(r"[A-Za-z0-9_\-]{1,128}\Z")
 _MIN_KEY_BYTES = 32
+_MAX_SIGNING_KEYS = 16
 _MAX_SIGNATURE_HEADER_LEN = 2048
 _MAX_TIMESTAMP_DIGITS = 16
 
@@ -54,30 +60,50 @@ def _secret_bytes(secret: str | bytes) -> bytes:
     return key
 
 
-def validate_signing_keys(keys: Mapping[str, str | bytes]) -> dict[str, bytes]:
-    """Validate all configured key IDs and signing secrets at startup."""
-    if not keys:
-        raise ValueError("receiver_signing_keys_required")
-    validated: dict[str, bytes] = {}
-    for key_id, secret in keys.items():
-        if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
-            raise FeedSecurityError("invalid_key_id")
-        validated[key_id] = _secret_bytes(secret)
-    return validated
+def validate_signing_keys(keys: SigningKeys) -> ValidatedKeys:
+    """Validate configured signing secret(s) or key_id mapping at startup."""
+    if isinstance(keys, Mapping):
+        if not keys:
+            raise ValueError("receiver_signing_keys_required")
+        if len(keys) > _MAX_SIGNING_KEYS:
+            raise ValueError("too_many_signing_keys")
+        validated: dict[str, bytes] = {}
+        for key_id, secret in keys.items():
+            if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
+                raise FeedSecurityError("invalid_key_id")
+            validated[key_id] = _secret_bytes(secret)
+        return validated
+
+    if isinstance(keys, (str, bytes)):
+        if not keys:
+            raise ValueError("receiver_signing_keys_required")
+        return (_secret_bytes(keys),)
+
+    if isinstance(keys, bytearray):
+        raise FeedSecurityError("invalid_signing_key")
+
+    if isinstance(keys, Sequence):
+        if not keys:
+            raise ValueError("receiver_signing_keys_required")
+        if len(keys) > _MAX_SIGNING_KEYS:
+            raise ValueError("too_many_signing_keys")
+        deduped = tuple(
+            dict.fromkeys(_secret_bytes(secret) for secret in keys)
+        )
+        return deduped
+
+    raise ValueError("receiver_signing_keys_required")
 
 
-def sign_event(
+def _compute_signature(
     event_id: str,
     attempt_timestamp: int,
     body: bytes,
     secret: str | bytes,
-    key_id: str = "v1",
-) -> dict[str, str]:
-    """Build Standard Webhooks v1 headers for raw UTF-8 JSON bytes."""
+) -> str:
+    """Compute a Standard Webhooks v1 HMAC-SHA256 signature string."""
     if not isinstance(event_id, str) or not _EVENT_ID_RE.fullmatch(event_id):
         raise FeedSecurityError("invalid_event_id")
-    if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
-        raise FeedSecurityError("invalid_key_id")
     if (
         not isinstance(attempt_timestamp, int)
         or isinstance(attempt_timestamp, bool)
@@ -90,11 +116,24 @@ def sign_event(
     ts = str(attempt_timestamp)
     signed = event_id.encode("ascii") + b"." + ts.encode("ascii") + b"." + body
     mac = hmac.new(_secret_bytes(secret), signed, hashlib.sha256).digest()
-    signature = base64.b64encode(mac).decode("ascii")
+    return "v1," + base64.b64encode(mac).decode("ascii")
+
+
+def sign_event(
+    event_id: str,
+    attempt_timestamp: int,
+    body: bytes,
+    secret: str | bytes,
+    key_id: str = "v1",
+) -> dict[str, str]:
+    """Build Standard Webhooks v1 headers for raw UTF-8 JSON bytes."""
+    if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
+        raise FeedSecurityError("invalid_key_id")
+    signature = _compute_signature(event_id, attempt_timestamp, body, secret)
     return {
         "Webhook-Id": event_id,
-        "Webhook-Timestamp": ts,
-        "Webhook-Signature": "v1," + signature,
+        "Webhook-Timestamp": str(attempt_timestamp),
+        "Webhook-Signature": signature,
         "Webhook-Key-Id": key_id,
     }
 
@@ -113,7 +152,7 @@ def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
 def verify_event(
     body: bytes,
     headers: Mapping[str, str],
-    keys: Mapping[str, str | bytes],
+    keys: SigningKeys,
     *,
     now: float | None = None,
     max_age: int = 300,
@@ -124,7 +163,9 @@ def verify_event(
     Args:
         body: Exact raw HTTP request body bytes.
         headers: HTTP request headers (matched case-insensitively).
-        keys: Mapping of ``key_id -> whsec_...`` secrets (supports rotation).
+        keys: A single ``whsec_...`` secret, a sequence of secrets (for
+            key-ID-agnostic verification/rotation), or a legacy mapping of
+            ``key_id -> whsec_...`` secrets.
         now: Optional Unix timestamp (seconds) for deterministic testing.
         max_age: Allowed clock skew / replay window in seconds (default: 300).
         consume: Optional atomic dedup callback returning False on duplicates.
@@ -135,7 +176,6 @@ def verify_event(
     normalized = _normalize_headers(headers)
     event_id = normalized.get("webhook-id", "")
     timestamp = normalized.get("webhook-timestamp", "")
-    key_id = normalized.get("webhook-key-id", "")
 
     if (
         not timestamp.isascii()
@@ -156,21 +196,43 @@ def verify_event(
         raise FeedSecurityError("invalid_clock")
     if abs(current - int(timestamp)) > max_age:
         raise FeedSecurityError("stale_timestamp")
-    if key_id not in keys:
-        raise FeedSecurityError("unknown_key_id")
-
-    expected = sign_event(
-        event_id, int(timestamp), body, keys[key_id], key_id
-    )["Webhook-Signature"]
 
     supplied = normalized.get("webhook-signature", "")
     if not supplied.isascii() or len(supplied) > _MAX_SIGNATURE_HEADER_LEN:
         raise FeedSecurityError("invalid_signature")
 
-    # Standard Webhooks allows multiple space-separated signatures during
-    # key rotation; accept if any candidate matches in constant time.
-    candidates = supplied.split(" ")
-    if not any(hmac.compare_digest(c, expected) for c in candidates):
+    ts_int = int(timestamp)
+    if isinstance(keys, Mapping):
+        key_id = normalized.get("webhook-key-id", "")
+        if key_id not in keys:
+            raise FeedSecurityError("unknown_key_id")
+        if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
+            raise FeedSecurityError("invalid_key_id")
+        expected_sigs = (
+            _compute_signature(event_id, ts_int, body, keys[key_id]),
+        )
+    else:
+        try:
+            validated = validate_signing_keys(keys)
+        except ValueError:
+            raise FeedSecurityError("invalid_signing_key") from None
+        assert isinstance(validated, tuple)
+        expected_sigs = tuple(
+            _compute_signature(event_id, ts_int, body, secret)
+            for secret in validated
+        )
+
+    # Standard Webhooks allows multiple space-separated signatures; accept if
+    # any candidate matches any configured secret in constant time.
+    candidates = [c for c in supplied.split(" ") if c]
+    if not candidates:
+        raise FeedSecurityError("invalid_signature")
+    matched = False
+    for expected in expected_sigs:
+        for candidate in candidates:
+            if hmac.compare_digest(candidate, expected):
+                matched = True
+    if not matched:
         raise FeedSecurityError("invalid_signature")
 
     if consume is not None and not consume(event_id):

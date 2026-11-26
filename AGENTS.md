@@ -8,7 +8,7 @@ If you are an AI coding assistant (Cursor, Claude Code, Codex, Antigravity, etc.
 
 ## 1. Repository Architecture
 
-- `alphaalgo_receiver/security.py`: Standard Webhooks v1 raw-byte HMAC-SHA256 verification (`Webhook-Id`, `Webhook-Timestamp`, `Webhook-Signature`, `Webhook-Key-Id`), ±300s replay guard, key rotation. **Do not weaken or bypass.**
+- `alphaalgo_receiver/security.py`: Standard Webhooks v1 raw-byte HMAC-SHA256 verification (`Webhook-Id`, `Webhook-Timestamp`, `Webhook-Signature`, optional `Webhook-Key-Id`), ±300s replay guard, single/multi-secret verification (`ALPHAALGO_SIGNING_SECRET`) and legacy `ALPHAALGO_RECEIVER_KEYS_JSON`. **Do not weaken or bypass.**
 - `alphaalgo_receiver/receiver.py`: Threaded WSGI app (`GET /healthz`, `POST /events`), strict 64 KiB body & JSON bounds (`NaN`/`Infinity` rejected), atomic SQLite WAL deduplication (`200 duplicate:true`, `409 Conflict` on hash mismatch).
 - `alphaalgo_receiver/handlers.py`: **Primary customization point.** Edit `on_verified_event(event)` or wire built-in sinks (`jsonl_file_handler`, `discord_webhook_handler`, `telegram_bot_handler`, `dispatch_handlers`, `AsyncEventDispatcher`).
 - `alphaalgo_receiver/cli.py`: CLI flags, env-var bindings, and threaded server lifecycle.
@@ -46,7 +46,7 @@ python3 -m unittest discover -s tests -q
 - Test end-to-end webhook behavior locally with the full lifecycle replay:
 
 ```bash
-# Terminal 1 (with ALPHAALGO_RECEIVER_KEYS_JSON exported)
+# Terminal 1 (with ALPHAALGO_SIGNING_SECRET exported)
 python3 examples/paper_ledger.py --serve --port 9091
 
 # Terminal 2
