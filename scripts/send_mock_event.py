@@ -48,6 +48,7 @@ SINGLE_EVENT_KINDS = (
     "spx_ibf_settlement",
     "stale_entry",
     "incomplete_spread",
+    "connectivity_test",
 )
 
 SCENARIO_NAMES = (
@@ -588,6 +589,48 @@ def build_mock_event(
             event_kind="entry",
             trade_revision=1,
         )
+
+    if kind == "connectivity_test":
+        source_id = f"mock-test-{suffix}"
+        return {
+            "schema_version": 3,
+            "event_id": _mock_event_id(source_id),
+            "source_event_id": source_id,
+            "source_id": "portal_test",
+            "trade_ref": f"TEST-PING-{suffix}",
+            "trade_revision": 1,
+            "event_kind": "test",
+            "record_kind": "test",
+            "test_event": True,
+            "broker_execution": False,
+            "strategy_id": "TEST",
+            "sub_strategy": None,
+            "ticker": "TEST",
+            "option_symbol": None,
+            "position_scale_x": None,
+            "entry_quantity": 0,
+            "exit_fill_quantity": 0,
+            "cumulative_exit_quantity": 0,
+            "remaining_quantity": 0,
+            "entry_price": None,
+            "exit_fill_price": None,
+            "fill_time_verified": False,
+            "expires_at": None,
+            "expiry_reason": "connectivity_test",
+            "requires_position_reconciliation": False,
+            "published_at": round(now, 3),
+            "instrument": {
+                "descriptor_version": 1,
+                "kind": "test",
+                "structure": None,
+                "complete": False,
+                "incomplete_reason": "connectivity_test",
+                "legs": [],
+            },
+            "message": (
+                "AlphaAlgo connectivity test event. Not a trade record."
+            ),
+        }
 
     raise ValueError(f"unsupported mock event kind: {kind}")
 

@@ -290,6 +290,58 @@ class TestSecurity(unittest.TestCase):
         finally:
             rec_direct.close()
 
+    def test_connectivity_test_event_accepted_and_formatted_clearly(
+        self,
+    ) -> None:
+        ev = {
+            "schema_version": 3,
+            "event_id": "aa3-test-abcdef123456",
+            "source_event_id": "test-abcdef123456",
+            "source_id": "portal_test",
+            "trade_ref": "TEST-PING-20261126-155320",
+            "trade_revision": 1,
+            "event_kind": "test",
+            "record_kind": "test",
+            "test_event": True,
+            "broker_execution": False,
+            "strategy_id": "TEST",
+            "ticker": "TEST",
+            "option_symbol": None,
+            "entry_quantity": 0,
+            "remaining_quantity": 0,
+            "fill_time_verified": False,
+            "instrument": {
+                "descriptor_version": 1,
+                "kind": "test",
+                "complete": False,
+                "incomplete_reason": "connectivity_test",
+                "legs": [],
+            },
+        }
+        summary = format_event_summary(ev)
+        self.assertIn("[TEST]", summary)
+        self.assertIn("TEST-PING-20261126-155320", summary)
+        self.assertIn("Connectivity check OK", summary)
+
+        seen: list[dict[str, object]] = []
+        rec = WebhookReceiver(
+            ":memory:",
+            self.secret,
+            on_event=seen.append,
+            clock=lambda: self.now,
+        )
+        try:
+            body = json.dumps(ev).encode("utf-8")
+            headers = sign_event(
+                ev["event_id"], int(self.now), body, self.secret, key_id="v2"
+            )
+            status, payload = rec.receive(body, headers)
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["accepted"])
+            self.assertEqual(len(seen), 1)
+        finally:
+            rec.close()
+
     def test_verify_event_consume_callback(self) -> None:
         headers = sign_event(
             "aa3-sec-1", int(self.now), self.body, self.secret

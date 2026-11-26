@@ -148,6 +148,18 @@ class PaperLedger:
         now = float(self._clock() if received_at is None else received_at)
         event_kind = str(event.get("event_kind") or "unknown")
         record_kind = str(event.get("record_kind") or "fill")
+        if (
+            record_kind == "test"
+            or event_kind == "test"
+            or event.get("test_event") is True
+        ):
+            return ApplyResult(
+                action="ignored_test_event",
+                trade_ref=trade_ref,
+                revision=revision,
+                status=None,
+                note="connectivity test event (not a trade)",
+            )
         inst = event.get("instrument")
         inst_map = inst if isinstance(inst, Mapping) else {}
         inst_kind = str(inst_map.get("kind") or "unknown")

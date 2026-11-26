@@ -212,10 +212,14 @@ Best for trying out the live read-only feed on a laptop or test VPS without buyi
      --port 9091
    ```
 
-5. **Verify end-to-end reachability:**
+5. **Verify end-to-end reachability & signed delivery:**
    ```bash
    curl -sS https://example-words.trycloudflare.com/healthz
    # Expected: {"service": "alphaalgo-feed-receiver", "schema_version": 3, "execution": "disabled"}
+   ```
+   Then click **Send test event** inside the Whop Developer Feed portal—your receiver terminal should immediately print:
+   ```text
+   Event received: [TEST] #TEST-PING-... | Connectivity check OK — your AlphaAlgo receiver is working (read-only test, no trade)
    ```
 
 > **Note:** Quick Tunnel URLs are ephemeral and change if `cloudflared` restarts (which requires updating your URL and signing secret in Whop). Use **Option B** or **Option C** for long-term unattended operation.

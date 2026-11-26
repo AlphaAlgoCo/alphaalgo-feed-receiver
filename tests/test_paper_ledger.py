@@ -180,6 +180,15 @@ class TestMockReplayAndPaperLedger(unittest.TestCase):
         for name in SCENARIO_NAMES:
             self.assertTrue(len(build_scenario(name, self.now)) >= 2)
 
+    def test_connectivity_test_event_ignored_without_opening_position(
+        self,
+    ) -> None:
+        ledger = PaperLedger(clock=lambda: self.now)
+        ev = build_mock_event("connectivity_test", self.now, tag="t1")
+        res = ledger.apply_event(ev)
+        self.assertEqual(res.action, "ignored_test_event")
+        self.assertEqual(ledger.positions(), [])
+
     def test_schema_v3_doc_examples_and_ai_guides_valid(self) -> None:
         root = Path(__file__).resolve().parents[1]
         schema_doc = (root / "docs" / "SCHEMA_V3.md").read_text(

@@ -92,9 +92,22 @@ def describe_contract(event: Mapping[str, Any]) -> str:
 
 def format_event_summary(event: Mapping[str, Any]) -> str:
     """Format a compact, single-line summary of a verified v3 event."""
-    kind = str(event.get("event_kind", "unknown")).upper()
-    strategy = str(event.get("strategy_id", "UNKNOWN"))
+    raw_kind = str(event.get("event_kind", "unknown"))
+    record_kind = str(event.get("record_kind", ""))
     trade_ref = str(event.get("trade_ref", "-"))
+    if (
+        record_kind == "test"
+        or raw_kind == "test"
+        or event.get("test_event") is True
+    ):
+        ref = str(event.get("trade_ref") or "TEST-PING")
+        return (
+            f"[TEST] #{ref} | Connectivity check OK — your AlphaAlgo "
+            "receiver is working (read-only test, no trade)"
+        )
+
+    kind = raw_kind.upper()
+    strategy = str(event.get("strategy_id", "UNKNOWN"))
     ticker = str(event.get("ticker", "-"))
     contract = describe_contract(event)
 

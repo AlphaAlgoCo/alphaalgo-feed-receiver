@@ -55,13 +55,13 @@ All numeric prices/quantities are standard JSON numbers (`NaN` and `Infinity` ar
 | `source_id` | `str` | Logical producer identifier (e.g., `"phase1"`, `"mock"`) |
 | `trade_ref` | `str` | Atomic trade identifier linking `entry -> entry_update -> partial_exit -> exit` |
 | `trade_revision` | `int` | Strictly monotonic revision integer per `trade_ref`. **Ignore events with `trade_revision <= last_applied_revision` to guard against out-of-order delivery.** |
-| `event_kind` | `str` | One of `"entry"`, `"entry_update"`, `"partial_exit"`, `"exit"`, `"snapshot"` |
+| `event_kind` | `str` | One of `"entry"`, `"entry_update"`, `"partial_exit"`, `"exit"`, `"snapshot"`, or `"test"` (portal connectivity check) |
 
 ### Record Classification & Execution Origin
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `record_kind` | `str` | `"fill"` (broker-confirmed live execution), `"settlement_observation"` (expiry cash-settlement observation), or `"non_execution_close"` (non-fill close observation) |
+| `record_kind` | `str` | `"fill"` (broker-confirmed live execution), `"settlement_observation"` (expiry cash-settlement observation), `"non_execution_close"` (non-fill close observation), or `"test"` (portal **Send test event** connectivity ping—never a trade) |
 | `broker_execution` | `bool \| null` | `false` for non-execution observations (`record_kind != "fill"`); `null` on normal broker fills |
 | `settlement_model` | `str \| null` | Present on `settlement_observation` (e.g., `"spxw_european_cash_settlement_1600"`, `"modelled_0dte_otm_expiry_zero"`, `"broker_confirmed_spxw_pm_cash_settlement"`) |
 | `settlement_underlying_price` | `float \| null` | Underlying settlement print used for `settlement_observation`, else `null` |
