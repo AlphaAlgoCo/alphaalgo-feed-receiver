@@ -137,6 +137,45 @@ class WebhookReceiver:
                 self.connection.rollback()
                 raise
 
+    def _log_security_rejection(
+        self, reason: str, headers: Mapping[str, str]
+    ) -> None:
+        """Log a sanitized, secret-free diagnostic warning on 401 rejection."""
+        if reason == "unknown_key_id":
+            incoming = ""
+            for name, value in headers.items():
+                if str(name).lower() == "webhook-key-id":
+                    incoming = str(value)[:32]
+                    break
+            configured = (
+                sorted(self.keys.keys())
+                if isinstance(self.keys, dict)
+                else []
+            )
+            logger.warning(
+                "Webhook rejected (401 unknown_key_id): incoming "
+                "Webhook-Key-Id=%r not in configured keys %s. Tip: switch to "
+                'ALPHAALGO_SIGNING_SECRET="whsec_..." to avoid tracking '
+                "key IDs.",
+                incoming,
+                configured,
+            )
+        elif reason == "stale_timestamp":
+            logger.warning(
+                "Webhook rejected (401 stale_timestamp): request timestamp "
+                "outside +/-%ds replay window; check UTC/NTP clock "
+                "(run --doctor).",
+                self.max_age,
+            )
+        elif reason == "invalid_signature":
+            logger.warning(
+                "Webhook rejected (401 invalid_signature): verify "
+                "ALPHAALGO_SIGNING_SECRET matches your latest Whop secret "
+                "and raw request bytes are unmodified."
+            )
+        else:
+            logger.warning("Webhook rejected (401 %s)", reason)
+
     def receive(
         self,
         body: bytes,
@@ -185,7 +224,8 @@ class WebhookReceiver:
                 "duplicate": False,
                 "execution": "disabled",
             }
-        except FeedSecurityError:
+        except FeedSecurityError as exc:
+            self._log_security_rejection(str(exc), headers)
             return 401, {"error": "signature_rejected"}
         except (ValueError, UnicodeError, TypeError):
             return 400, {"error": "invalid_event_envelope"}

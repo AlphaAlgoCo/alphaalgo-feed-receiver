@@ -215,6 +215,81 @@ class TestSecurity(unittest.TestCase):
         finally:
             rec.close()
 
+    def test_security_rejections_log_actionable_warnings_without_secrets(
+        self,
+    ) -> None:
+        ev = {
+            "schema_version": 3,
+            "event_id": "aa3-log-1",
+            "trade_ref": "S608-1125-01",
+            "event_kind": "entry",
+            "strategy_id": "S608",
+        }
+        body = json.dumps(ev).encode("utf-8")
+
+        # 1. Legacy KEYS_JSON with mismatched key_id (v2 vs configured v1).
+        rec_legacy = WebhookReceiver(
+            ":memory:",
+            {"v1": self.secret},
+            on_event=None,
+            clock=lambda: self.now,
+        )
+        try:
+            headers_v2 = sign_event(
+                "aa3-log-1", int(self.now), body, self.secret, key_id="v2"
+            )
+            with self.assertLogs("alphaalgo_receiver", level="WARNING") as cm:
+                status, payload = rec_legacy.receive(body, headers_v2)
+            self.assertEqual(status, 401)
+            self.assertEqual(payload, {"error": "signature_rejected"})
+            msg = "\n".join(cm.output)
+            self.assertIn("unknown_key_id", msg)
+            self.assertIn("'v2'", msg)
+            self.assertIn("['v1']", msg)
+            self.assertIn("ALPHAALGO_SIGNING_SECRET", msg)
+            self.assertNotIn(self.secret, msg)
+
+            # Newline in untrusted Webhook-Key-Id is escaped via %r.
+            injected = dict(headers_v2, **{"Webhook-Key-Id": "v2\nFAKE"})
+            with self.assertLogs("alphaalgo_receiver", level="WARNING") as cm:
+                status, _ = rec_legacy.receive(body, injected)
+            self.assertEqual(status, 401)
+            self.assertIn("v2\\nFAKE", cm.output[0])
+            self.assertNotIn("\n", cm.output[0])
+        finally:
+            rec_legacy.close()
+
+        # 2. Stale timestamp & invalid signature diagnostics.
+        rec_direct = WebhookReceiver(
+            ":memory:",
+            self.secret,
+            on_event=None,
+            clock=lambda: self.now,
+        )
+        try:
+            stale_h = sign_event(
+                "aa3-log-1", int(self.now) - 400, body, self.secret
+            )
+            with self.assertLogs("alphaalgo_receiver", level="WARNING") as cm:
+                status, _ = rec_direct.receive(body, stale_h)
+            self.assertEqual(status, 401)
+            self.assertIn("stale_timestamp", cm.output[0])
+            self.assertIn("--doctor", cm.output[0])
+
+            wrong_h = sign_event(
+                "aa3-log-1",
+                int(self.now),
+                body,
+                generate_signing_secret(),
+            )
+            with self.assertLogs("alphaalgo_receiver", level="WARNING") as cm:
+                status, _ = rec_direct.receive(body, wrong_h)
+            self.assertEqual(status, 401)
+            self.assertIn("invalid_signature", cm.output[0])
+            self.assertNotIn(self.secret, cm.output[0])
+        finally:
+            rec_direct.close()
+
     def test_verify_event_consume_callback(self) -> None:
         headers = sign_event(
             "aa3-sec-1", int(self.now), self.body, self.secret
